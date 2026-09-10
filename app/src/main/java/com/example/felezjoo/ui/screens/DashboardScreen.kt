@@ -184,6 +184,57 @@ fun DashboardScreen(viewModel: FelezJooViewModel) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        // Quick Polarity & Tone Controls Card
+        val samplingConfig by viewModel.samplingConfig.collectAsState()
+        val activePolarity = dspResult?.effectivePolarity ?: samplingConfig.polarity
+        Surface(
+            color = LabSurface,
+            shape = RoundedCornerShape(8.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, LabBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("POLARITY: ", fontSize = 11.sp, color = LabTextSecondary, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (activePolarity.sign > 0) "POSITIVE (+)" else "NEGATIVE (-)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (activePolarity.sign > 0) LabSecondary else LabTertiary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("•", color = LabTextMuted)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("TONE: ", fontSize = 11.sp, color = LabTextSecondary, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (viewModel.audioManager.isMuted) "MUTED" else viewModel.audioManager.mode.displayName,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (viewModel.audioManager.isMuted) LabError else LabPrimary
+                    )
+                }
+
+                Button(
+                    onClick = { viewModel.navigateTo(com.example.felezjoo.ui.Screen.DETECTOR_CONTROLS) },
+                    colors = ButtonDefaults.buttonColors(containerColor = LabPrimary.copy(alpha = 0.2f), contentColor = LabPrimary),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, LabPrimary),
+                    shape = RoundedCornerShape(6.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier.height(30.dp).testTag("dashboard_to_controls_btn")
+                ) {
+                    Text("CONTROLS & POLARITY ⚙", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
         // Live Waveform Mini-Lab (Height ~240dp)
         Surface(
             color = LabSurface,

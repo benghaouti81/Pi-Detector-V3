@@ -150,7 +150,7 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
                     Spacer(modifier = Modifier.height(10.dp))
 
                     // Grouped Navigation Items
-                    val categories = listOf("Detection", "Research", "Hardware", "Diagnostics", "Data", "Info")
+                    val categories = listOf("Detection", "Settings", "Research", "Hardware", "Diagnostics", "Data", "Info")
                     categories.forEach { cat ->
                         Text(
                             cat.uppercase(),
@@ -232,6 +232,18 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
                         }
                     },
                     actions = {
+                        // Quick Controls (Polarity & Settings)
+                        IconButton(
+                            onClick = { viewModel.navigateTo(Screen.DETECTOR_CONTROLS) },
+                            modifier = Modifier.size(36.dp).testTag("topbar_controls_btn")
+                        ) {
+                            Icon(
+                                Icons.Default.Build,
+                                contentDescription = "Controls & Polarity",
+                                tint = if (currentScreen == Screen.DETECTOR_CONTROLS) LabSecondary else Color.White
+                            )
+                        }
+
                         // Quick Mute Toggle
                         IconButton(
                             onClick = { audioManager.isMuted = !audioManager.isMuted },
