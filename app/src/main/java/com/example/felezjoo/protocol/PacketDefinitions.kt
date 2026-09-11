@@ -23,6 +23,9 @@ object PacketConstants {
     const val RAW_BLOCK_EXPECTED_PAYLOAD_LEN = 154
     const val RAW_BLOCK_TOTAL_PACKET_LEN = 162
     const val RAW_BLOCK_SAMPLE_COUNT = 70
+
+    // Flags
+    const val FLAGS_ETS_PHASE_STEPPED = 0x0001
 }
 
 enum class PacketErrorReason {

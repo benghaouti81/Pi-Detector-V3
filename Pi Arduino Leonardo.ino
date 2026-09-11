@@ -59,28 +59,41 @@
 #define ETS_SLOTS           5
 #define ETS_SAMPLES         70
 
+/* ============================================================
+ * ADC & TIMING CONSTANTS (ATmega32U4 @ 16 MHz)
+ * ============================================================
+ *
+ * ADC Clock: 16 MHz / 16 (ADPS2) = 1.0 MHz -> 1 ADC clock = 1.0 us = 16 CPU cycles.
+ *
+ * ATmega32U4 Datasheet, Section "ADC Timing Diagrams" (Figure 24-11):
+ * In normal conversion, Sample & Hold occurs 1.5 ADC clock cycles after
+ * the conversion start (hardware trigger event).
+ * 1.5 ADC clock cycles @ 1.0 MHz = 1.5 us.
+ * 1.5 us * 16 MHz = 24 CPU cycles.
+ */
+#define ADC_PRESCALER                 16
+#define ADC_TRIGGER_TO_SH_CYCLES      24
+
+#define FLAGS_ETS_PHASE_STEPPED       0x0001
 
 /*
- * One ETS phase:
- *
- * 1.6 us
- *
- * At 16 MHz:
- *
- * 1.6 us = 25.6 CPU cycles
+ * Convert ETS phase ticks (1.6 us step) to CPU cycles:
+ * 1.6 us * 16 MHz = 25.6 CPU cycles.
+ * round(n * 25.6) = (n * 256 + 5) / 10
+ * This avoids cumulative integer truncation errors.
  */
-static inline uint16_t ets_ticks_to_cpu(uint16_t n)
+static inline uint32_t ets_ticks_to_cpu_cycles(uint16_t n)
 {
-    uint32_t x;
-
-    x = ((uint32_t)n * 256UL + 5UL) / 10UL;
-
-    if (x > 65535UL)
-        x = 65535UL;
-
-    return (uint16_t)x;
+    return ((uint32_t)n * 256UL + 5UL) / 10UL;
 }
 
+static inline uint16_t ets_ticks_to_cpu(uint16_t n)
+{
+    uint32_t x = ets_ticks_to_cpu_cycles(n);
+    if (x > 65535UL)
+        x = 65535UL;
+    return (uint16_t)x;
+}
 
 /*
  * Five samples belonging to one physical pulse are separated
@@ -115,7 +128,12 @@ static inline uint16_t ets_slot_offset(uint8_t slot)
 #define MIN_PULSE_US            10
 #define MAX_PULSE_US            500
 
-#define MIN_DELAY_TICKS         2
+/*
+ * Conservative initial limit for minimum delay:
+ * 4 * 1.6 us = 6.4 us.
+ * Must be verified by hardware measurement (oscilloscope/logic analyzer).
+ */
+#define MIN_DELAY_TICKS         4
 #define MAX_DELAY_TICKS         50
 
 
@@ -141,6 +159,9 @@ volatile uint8_t bufferState
     [BUFFER_COUNT];
 
 volatile uint32_t bufferSequence
+    [BUFFER_COUNT];
+
+volatile uint32_t bufferTimestampUs
     [BUFFER_COUNT];
 
 volatile uint8_t captureBuffer = 0xFF;
@@ -376,11 +397,11 @@ static void buildPacket(
     );
 
     /*
-     * Timestamp not implemented.
+     * Device-local timestamp at start of ETS frame.
      */
     put32(
         &packet[10],
-        0
+        bufferTimestampUs[buffer]
     );
 
     put16(
@@ -405,11 +426,11 @@ static void buildPacket(
     }
 
     /*
-     * Flags.
+     * Flags: FLAGS_ETS_PHASE_STEPPED (0x0001) marks phase-stepped physical timing.
      */
     put16(
         &packet[158],
-        0
+        FLAGS_ETS_PHASE_STEPPED
     );
 
     /*
@@ -426,65 +447,76 @@ static void buildPacket(
 
 
 /* ============================================================
- * ADC
+ * ADC & HARDWARE AUTO-TRIGGER TIMING
  * ============================================================
  *
- * IMPORTANT:
+ * ATmega32U4 Hardware Auto-Trigger:
+ * Timer1 Compare Match B hardware auto-triggers the ADC conversion
+ * via ADATE and ADCSRB (ADTS[2:0] = 101).
  *
- * ADC AUTO TRIGGER IS NOT USED.
+ * S&H Timing (Datasheet Section "ADC Timing Diagrams"):
+ * Sample & Hold occurs 1.5 ADC clock cycles after conversion start.
+ * ADC Clock = 1.0 MHz -> 1.5 ADC clocks = 1.5 us = 24 CPU cycles.
  *
- * Timer1 COMPB starts each conversion directly by setting ADSC.
+ * Physical timing from TX-off:
+ * desiredSampleHoldTime = delay + phase * 1.6 us
+ * phase = pulse + slot * 14
  *
- * This is intentional for this version.
- *
+ * Hardware Compare Match B trigger time:
+ * OCR1B = desiredSampleHoldCycles - ADC_TRIGGER_TO_SH_CYCLES
  * ============================================================
  */
 
 static void adcStop()
 {
-    /*
-     * Stop ADC interrupt.
-     *
-     * No ADATE is used in this version.
-     */
-    ADCSRA &= (uint8_t)
-        ~_BV(ADIE);
-
+    ADCSRA &= (uint8_t)~_BV(ADIE);
     acquisitionActive = 0;
-
-    TIMSK1 &= (uint8_t)
-        ~_BV(OCIE1B);
+    TIMSK1 &= (uint8_t)~_BV(OCIE1B);
 }
-
 
 /*
- * Calculate Timer1 compare point.
+ * Desired Sample & Hold time in CPU cycles relative to TX-off (TCNT1 = 0):
+ * desiredSampleHoldTime = delay + (pulse + slot * 14) * 1.6 us
  */
-static uint16_t calculateSampleOffset(
-    uint8_t slot)
+static inline uint32_t calculateDesiredSampleHoldCycles(uint8_t pulse, uint8_t slot)
 {
-    uint16_t delayCycles;
-    uint16_t slotCycles;
-
-    delayCycles =
-        ets_ticks_to_cpu(activeDelayTicks);
-
-    slotCycles =
-        ets_slot_offset(slot);
-
-    return delayCycles + slotCycles;
+    uint16_t phase = (uint16_t)pulse + (uint16_t)slot * ETS_PULSES;
+    uint32_t delayCycles = ets_ticks_to_cpu_cycles(activeDelayTicks);
+    uint32_t phaseCycles = ets_ticks_to_cpu_cycles(phase);
+    return delayCycles + phaseCycles;
 }
 
+/*
+ * Calculate Timer1 Compare Match B value (OCR1B) for hardware ADC auto-trigger:
+ * Timer1 Compare B triggers ADC start by hardware.
+ * S&H takes place ADC_TRIGGER_TO_SH_CYCLES (24 CPU cycles) after trigger.
+ * Target timing is NOT pushed or modified at runtime.
+ */
+static uint16_t calculateCompareBOffset(uint8_t slot)
+{
+    const uint8_t pulse = etsPulse;
+    uint32_t desiredSH = calculateDesiredSampleHoldCycles(pulse, slot);
+
+    if (desiredSH > (uint32_t)ADC_TRIGGER_TO_SH_CYCLES)
+    {
+        uint32_t compareVal = desiredSH - (uint32_t)ADC_TRIGGER_TO_SH_CYCLES;
+        if (compareVal > 65535UL)
+            return 65535U;
+        return (uint16_t)compareVal;
+    }
+    return 0;
+}
+
+static uint16_t calculateSampleOffset(uint8_t slot)
+{
+    return calculateCompareBOffset(slot);
+}
 
 /*
  * Start ADC acquisition for the CURRENT physical pulse.
- *
- * This function does NOT start a new ETS frame.
  */
 static void adcAcquisitionStart()
 {
-    uint16_t firstOffset;
-
     if (captureBuffer == 0xFF)
     {
         if (reserveCaptureBuffer() == 0xFF)
@@ -504,53 +536,36 @@ static void adcAcquisitionStart()
     }
 
     acquisitionActive = 1;
-
     triggerSlot = 0;
-
     adcResultSlot = 0;
 
     /*
-     * Local acquisition timebase.
+     * Local acquisition timebase:
+     * Reset Timer1 to 0 at TX-off.
      */
     TCNT1 = 0;
 
-    firstOffset =
-        calculateSampleOffset(0);
-
     /*
-     * Minimum safety offset.
+     * Set first compare match for slot 0 of the current pulse (etsPulse).
+     * Schedulability has been validated beforehand.
      */
-    if (firstOffset < 8)
-        firstOffset = 8;
-
-    OCR1B = firstOffset;
+    OCR1B = calculateCompareBOffset(0);
 
     /*
-     * Clear pending Timer1 COMPB flag.
+     * Clear pending Timer1 COMPB flag so the first compare match rising edge
+     * triggers the ADC cleanly.
      */
     TIFR1 = _BV(OCF1B);
 
     /*
-     * Enable Timer1 COMPB interrupt.
+     * Clear old ADC completion flag and enable ADC interrupt.
+     */
+    ADCSRA |= _BV(ADIF) | _BV(ADIE);
+
+    /*
+     * Enable Timer1 COMPB interrupt to schedule subsequent slots.
      */
     TIMSK1 |= _BV(OCIE1B);
-
-    /*
-     * No ADC auto-trigger.
-     *
-     * ADC conversion will be started directly
-     * from TIMER1_COMPB_vect by ADSC.
-     */
-
-    /*
-     * Clear any old ADC completion flag.
-     */
-    ADCSRA |= _BV(ADIF);
-
-    /*
-     * Enable ADC interrupt.
-     */
-    ADCSRA |= _BV(ADIE);
 }
 
 
@@ -563,45 +578,30 @@ ISR(TIMER1_COMPB_vect)
 {
     if (!acquisitionActive)
     {
-        TIMSK1 &= (uint8_t)
-            ~_BV(OCIE1B);
-
+        TIMSK1 &= (uint8_t)~_BV(OCIE1B);
         return;
     }
 
     /*
-     * --------------------------------------------------------
-     * Start the ADC conversion for the current slot.
-     * --------------------------------------------------------
+     * Hardware Auto-Trigger:
+     * Timer1 Compare Match B automatically started ADC conversion in hardware.
+     * ADSC is intentionally NOT set here.
      *
-     * IMPORTANT:
-     *
-     * We intentionally start ADC manually here.
-     *
-     * This replaces ADC Auto Trigger.
-     */
-    ADCSRA |= _BV(ADSC);
-
-    /*
-     * Slot 4 is the last slot.
-     *
-     * No more Timer1 compares are required.
+     * Slot 4 is the last slot (ETS_SLOTS = 5).
+     * If all 5 compare triggers have fired for this physical pulse,
+     * disable Timer1 COMPB interrupt.
      */
     if (triggerSlot >= ETS_SLOTS - 1)
     {
-        TIMSK1 &= (uint8_t)
-            ~_BV(OCIE1B);
-
+        TIMSK1 &= (uint8_t)~_BV(OCIE1B);
         return;
     }
 
     /*
-     * Schedule next ADC trigger.
+     * Schedule next compare match for hardware ADC trigger.
      */
     triggerSlot++;
-
-    OCR1B =
-        calculateSampleOffset(triggerSlot);
+    OCR1B = calculateCompareBOffset(triggerSlot);
 }
 
 
@@ -778,6 +778,54 @@ static uint16_t pulseToTicks(
 
 
 /* ============================================================
+ * CONFIGURATION VALIDATION (Requirement 4 & 5)
+ * ============================================================
+ *
+ * Schedulability and limits are verified before acquisition starts.
+ * Invalid configurations are rejected. Target timings are never distorted.
+ */
+static bool isConfigurationValid(
+    uint16_t freq,
+    uint16_t pulseUs,
+    uint16_t delayTicks)
+{
+    if (freq < MIN_FREQUENCY_HZ || freq > MAX_FREQUENCY_HZ)
+        return false;
+
+    if (pulseUs < MIN_PULSE_US || pulseUs > MAX_PULSE_US)
+        return false;
+
+    if (delayTicks < MIN_DELAY_TICKS || delayTicks > MAX_DELAY_TICKS)
+        return false;
+
+    uint32_t periodTicks = 2000000UL / (uint32_t)freq;
+    uint32_t pulseTicks = (uint32_t)pulseUs * 2UL;
+
+    if (pulseTicks >= periodTicks)
+        return false;
+
+    /*
+     * Verify first compare is schedulable without delay or push.
+     * Minimum delay = 4 ticks -> delayCycles = 102.
+     * S&H = 102, OCR1B = 102 - 24 = 78 cycles (> 30 cycles overhead).
+     */
+    uint32_t firstDelayCycles = ets_ticks_to_cpu_cycles(delayTicks);
+    if (firstDelayCycles <= (uint32_t)ADC_TRIGGER_TO_SH_CYCLES + 30UL)
+        return false;
+
+    /*
+     * Verify inter-pulse off-time fits total acquisition window.
+     */
+    uint32_t offTimeUs = (periodTicks - pulseTicks) / 2UL;
+    uint32_t maxAcqTimeUs = ((uint32_t)delayTicks * 16UL) / 10UL + 111UL + 15UL;
+    if (maxAcqTimeUs >= offTimeUs)
+        return false;
+
+    return true;
+}
+
+
+/* ============================================================
  * APPLY SETTINGS
  * ============================================================
  *
@@ -796,23 +844,8 @@ static void applySettings()
     pulse = pendingPulseUs;
     delay = pendingDelayTicks;
 
-    if (frequency < MIN_FREQUENCY_HZ)
-        frequency = MIN_FREQUENCY_HZ;
-
-    if (frequency > MAX_FREQUENCY_HZ)
-        frequency = MAX_FREQUENCY_HZ;
-
-    if (pulse < MIN_PULSE_US)
-        pulse = MIN_PULSE_US;
-
-    if (pulse > MAX_PULSE_US)
-        pulse = MAX_PULSE_US;
-
-    if (delay < MIN_DELAY_TICKS)
-        delay = MIN_DELAY_TICKS;
-
-    if (delay > MAX_DELAY_TICKS)
-        delay = MAX_DELAY_TICKS;
+    if (!isConfigurationValid(frequency, pulse, delay))
+        return;
 
     periodTicks =
         frequencyToTicks(frequency);
@@ -928,6 +961,11 @@ ISR(TIMER3_COMPB_vect)
         triggerSlot = 0;
 
         adcResultSlot = 0;
+
+        /*
+         * Device-local timestamp at frame start.
+         */
+        bufferTimestampUs[captureBuffer] = micros();
     }
 
     /*
@@ -1179,24 +1217,26 @@ static void adcInit()
     ADCSRA |= _BV(ADPS2);
 
     /*
-     * Enable ADC.
+     * Hardware Auto-Trigger Source Selection:
+     * ATmega32U4 Datasheet Table 24-6:
+     * ADTS[2:0] = 101 selects Timer/Counter1 Compare Match B.
      */
-    ADCSRA |= _BV(ADEN);
+    ADCSRB = (ADCSRB & (uint8_t)~( _BV(ADTS2) | _BV(ADTS1) | _BV(ADTS0) )) |
+             (uint8_t)( _BV(ADTS2) | _BV(ADTS0) );
 
     /*
-     * Auto trigger disabled.
+     * Enable ADC and Auto Trigger (ADATE).
      */
-    ADCSRA &= (uint8_t)
-        ~_BV(ADATE);
+    ADCSRA |= _BV(ADEN) | _BV(ADATE);
 
     /*
-     * ADC interrupt disabled until acquisition.
+     * ADC interrupt disabled until acquisition starts.
      */
     ADCSRA &= (uint8_t)
         ~_BV(ADIE);
 
     /*
-     * Dummy conversion.
+     * Dummy conversion to initialize ADC.
      */
     ADCSRA |= _BV(ADSC);
 
@@ -1239,6 +1279,12 @@ static void txInit()
 
 static void detectorStart()
 {
+    if (!isConfigurationValid(pendingFrequency, pendingPulseUs, pendingDelayTicks))
+    {
+        Serial.println(F("ERROR INVALID_CONFIG"));
+        return;
+    }
+
     noInterrupts();
 
     /*
@@ -1345,15 +1391,27 @@ static void detectorStop()
     adcResultSlot = 0;
 
     /*
-     * Cancel packet transmission state.
-     *
-     * Do NOT alter buffer states here.
+     * Buffer stop leak fix (Requirement 8):
+     * Return stuck transmission or capture buffers to BUF_FREE.
      */
+    if (txBuffer != 0xFF)
+    {
+        bufferState[txBuffer] = BUF_FREE;
+        txBuffer = 0xFF;
+    }
+
+    if (captureBuffer != 0xFF)
+    {
+        if (bufferState[captureBuffer] == BUF_FILLING)
+        {
+            bufferState[captureBuffer] = BUF_FREE;
+        }
+        captureBuffer = 0xFF;
+    }
+
     txPacketActive = 0;
 
     txPacketOffset = 0;
-
-    txBuffer = 0xFF;
 
 #if TX_ACTIVE_HIGH
     PORTB &= (uint8_t)~_BV(PB5);
@@ -1536,7 +1594,16 @@ static void processCommand()
         Serial.print(framesCompleted);
 
         Serial.print(F(",DROP="));
-        Serial.println(framesDropped);
+        Serial.print(framesDropped);
+
+        uint8_t freeBuffers = 0;
+        for (uint8_t i = 0; i < BUFFER_COUNT; i++)
+        {
+            if (bufferState[i] == BUF_FREE)
+                freeBuffers++;
+        }
+        Serial.print(F(",FREE="));
+        Serial.println(freeBuffers);
 
         return;
     }
@@ -1821,6 +1888,9 @@ void setup()
             BUF_FREE;
 
         bufferSequence[i] =
+            0;
+
+        bufferTimestampUs[i] =
             0;
     }
 

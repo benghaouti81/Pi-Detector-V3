@@ -168,10 +168,10 @@ fun DelayFinderScreen(viewModel: FelezJooViewModel) {
                 ) {
                     Text("Delay Ticks:", fontSize = 11.sp, color = LabTextSecondary, modifier = Modifier.width(90.dp))
                     Slider(
-                        value = currentBlock.delayTicks.toFloat(),
+                        value = currentBlock.delayTicks.coerceIn(4, 50).toFloat(),
                         onValueChange = { viewModel.setDelayTicks(it.toInt()) },
-                        valueRange = 1f..40f,
-                        steps = 39,
+                        valueRange = 4f..50f,
+                        steps = 45,
                         colors = SliderDefaults.colors(thumbColor = LabTertiary, activeTrackColor = LabTertiary),
                         modifier = Modifier.weight(1f)
                     )

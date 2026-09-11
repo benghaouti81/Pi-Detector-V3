@@ -17,6 +17,7 @@ import com.example.felezjoo.models.TargetClassification
 import com.example.felezjoo.models.WaveformPolarity
 import com.example.felezjoo.protocol.Crc16Ccitt
 import com.example.felezjoo.protocol.PacketConstants
+import com.example.felezjoo.protocol.PacketErrorReason
 import com.example.felezjoo.protocol.PacketGenerator
 import com.example.felezjoo.protocol.ProtocolParser
 import com.example.felezjoo.protocol.RawPacketRecord
@@ -1250,4 +1251,218 @@ class FelezJooDspAndProtocolTest {
         assertEquals("Quality must be UNKNOWN for insufficient samples", PolarityDetectionQuality.UNKNOWN, insufficientResult.quality)
         assertFalse("Insufficient samples detection must not be reliable", insufficientResult.isReliable)
     }
+
+    /**
+     * ============================================================
+     * ETS PHYSICAL TIMING TESTS (Requirement 1 & 8)
+     * ============================================================
+     *
+     * Validates that:
+     * - pulse 0, slot 1 is separated from pulse 0, slot 0 by 14 * 1.6 µs = 22.4 µs.
+     * - pulse 1, slot 0 is separated from pulse 0, slot 0 by 1 * 1.6 µs = 1.6 µs.
+     * - Reconstructed chronologic sample index: index = pulse + slot * 14.
+     * - Microcontroller cycle formula: round(phase * 25.6) = (phase * 256 + 5) / 10.
+     */
+    @Test
+    fun testEtsPhysicalTimingRelationships() {
+        val dtUs = 1.6
+        val pulses = 14
+
+        fun etsTicksToCpuCycles(n: Int): Long {
+            return ((n.toLong() * 256L + 5L) / 10L)
+        }
+
+        fun desiredSHCycles(pulse: Int, slot: Int, delayTicks: Int): Long {
+            val phase = pulse + slot * pulses
+            return etsTicksToCpuCycles(delayTicks) + etsTicksToCpuCycles(phase)
+        }
+
+        val delayTicks = 10 // 16.0 us
+        val p0s0 = desiredSHCycles(pulse = 0, slot = 0, delayTicks = delayTicks)
+        val p0s1 = desiredSHCycles(pulse = 0, slot = 1, delayTicks = delayTicks)
+        val p1s0 = desiredSHCycles(pulse = 1, slot = 0, delayTicks = delayTicks)
+
+        // Pulse 0, slot 1 vs Pulse 0, slot 0:
+        // phase 14 vs phase 0: 14 * 1.6 us = 22.4 us
+        // At 16 MHz: 22.4 us * 16 = 358.4 cycles -> rounded to 358 cycles.
+        val deltaP0S1_Cycles = p0s1 - p0s0
+        assertEquals(358L, deltaP0S1_Cycles)
+        val deltaP0S1_Us = deltaP0S1_Cycles / 16.0
+        assertEquals(22.4, deltaP0S1_Us, 0.05)
+
+        // Pulse 1, slot 0 vs Pulse 0, slot 0:
+        // phase 1 vs phase 0: 1 * 1.6 us = 1.6 us
+        // At 16 MHz: 1.6 us * 16 = 25.6 cycles -> rounded to 26 cycles.
+        val deltaP1S0_Cycles = p1s0 - p0s0
+        assertEquals(26L, deltaP1S0_Cycles)
+        val deltaP1S0_Us = deltaP1S0_Cycles / 16.0
+        assertEquals(1.6, deltaP1S0_Us, 0.05)
+
+        // Verify full phase reconstruction indexing across all 70 samples:
+        var verifiedIndex = 0
+        for (slot in 0 until 5) {
+            for (pulse in 0 until 14) {
+                val reconstructedIndex = pulse + slot * 14
+                val timeOffsetUs = reconstructedIndex * dtUs
+                val expectedSlotOffsetUs = (slot * 14) * dtUs
+                val expectedPulseOffsetUs = pulse * dtUs
+                assertEquals(expectedSlotOffsetUs + expectedPulseOffsetUs, timeOffsetUs, 1e-6)
+                assertEquals(verifiedIndex, reconstructedIndex)
+                verifiedIndex++
+            }
+        }
+        assertEquals(70, verifiedIndex)
+    }
+
+    /**
+     * Requirement 7: Validate that parseRawBlock rejects mismatched payload length.
+     * Expected payload length = 12 + sampleCount * 2 + 2 = 154 for sampleCount=70.
+     */
+    @Test
+    fun testProtocolParserRejectsMismatchedPayloadLength() {
+        var errorRecordReceived: RawPacketRecord? = null
+        var validBlockReceived: DecayBlock? = null
+
+        val parser = ProtocolParser(
+            onDecayBlockParsed = { validBlockReceived = it },
+            onRawPacketRecord = { if (!it.isValid) errorRecordReceived = it },
+            onAsciiLineParsed = {},
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        // Create a packet with corrupted payload length (150 instead of 154)
+        val samples = IntArray(70) { 500 }
+        val validPacket = PacketGenerator.createRawBlockPacket(
+            sequence = 100L,
+            timestamp = 1000L,
+            delayTicks = 10,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+
+        // If header payload length is 150 instead of 154, expected packet size is 6 + 150 + 2 = 158 bytes
+        val corruptPacket = ByteArray(158)
+        System.arraycopy(validPacket, 0, corruptPacket, 0, 156)
+        corruptPacket[4] = 150.toByte()
+        corruptPacket[5] = 0.toByte()
+        // Recompute CRC over 0..155 so BAD_CRC doesn't mask BAD_LENGTH
+        val crc = Crc16Ccitt.compute(corruptPacket, 0, 156)
+        corruptPacket[156] = (crc and 0xFF).toByte()
+        corruptPacket[157] = ((crc shr 8) and 0xFF).toByte()
+
+        parser.processIncomingBytes(corruptPacket, corruptPacket.size)
+
+        assertNotNull("Parser must report error for mismatched payloadLen", errorRecordReceived)
+        assertEquals(PacketErrorReason.BAD_LENGTH, errorRecordReceived!!.errorReason)
+        assertEquals(null, validBlockReceived)
+    }
+
+    /**
+     * Requirement 7: Validate that line starting with '#' longer than 512 bytes
+     * is skipped without hanging or causing an infinite buffer loop.
+     */
+    @Test
+    fun testProtocolParserHandlesOverlongHashLineGracefully() {
+        var validBlockReceived: DecayBlock? = null
+
+        val parser = ProtocolParser(
+            onDecayBlockParsed = { validBlockReceived = it },
+            onRawPacketRecord = {},
+            onAsciiLineParsed = {},
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        // Generate corrupted '#' line of 600 bytes without newline
+        val corruptHashBytes = ByteArray(600) { 'A'.code.toByte() }
+        corruptHashBytes[0] = '#'.code.toByte()
+
+        // Valid packet right after
+        val samples = IntArray(70) { 400 }
+        val validPacket = PacketGenerator.createRawBlockPacket(
+            sequence = 200L,
+            timestamp = 2000L,
+            delayTicks = 10,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+
+        val stream = corruptHashBytes + validPacket
+        parser.processIncomingBytes(stream, stream.size)
+
+        assertNotNull("Parser must skip corrupted overlong '#' line and parse following valid packet", validBlockReceived)
+        assertEquals(200L, validBlockReceived!!.sequenceNumber)
+        assertTrue(validBlockReceived!!.timeAxisValid)
+    }
+
+    /**
+     * Requirement 6: Validate FLAGS_ETS_PHASE_STEPPED sets timeAxisValid = true,
+     * and legacy flags = 0 sets timeAxisValid = false.
+     */
+    @Test
+    fun testTimeAxisValidFlag() {
+        var parsedBlock: DecayBlock? = null
+        val parser = ProtocolParser(
+            onDecayBlockParsed = { parsedBlock = it },
+            onRawPacketRecord = {},
+            onAsciiLineParsed = {},
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        val samples = IntArray(70) { 300 }
+
+        // Packet 1: Legacy firmware (flags = 0)
+        val legacyPacket = PacketGenerator.createRawBlockPacket(
+            sequence = 1L,
+            timestamp = 1000L,
+            delayTicks = 10,
+            samples = samples,
+            flags = 0
+        )
+        parser.processIncomingBytes(legacyPacket, legacyPacket.size)
+        assertNotNull(parsedBlock)
+        assertFalse("Legacy firmware without FLAGS_ETS_PHASE_STEPPED must have timeAxisValid = false", parsedBlock!!.timeAxisValid)
+
+        // Packet 2: Corrected ETS firmware (FLAGS_ETS_PHASE_STEPPED = 0x0001)
+        val modernPacket = PacketGenerator.createRawBlockPacket(
+            sequence = 2L,
+            timestamp = 2000L,
+            delayTicks = 10,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+        parser.processIncomingBytes(modernPacket, modernPacket.size)
+        assertNotNull(parsedBlock)
+        assertTrue("Firmware with FLAGS_ETS_PHASE_STEPPED must have timeAxisValid = true", parsedBlock!!.timeAxisValid)
+    }
+
+    /*
+     * ============================================================
+     * HARDWARE ACCEPTANCE TESTS SPECIFICATION (Requirement 8)
+     * ============================================================
+     *
+     * 1. Physical TX-off to First ADC Conversion (Oscilloscope / Logic Analyzer):
+     *    - Channel 1 (Probe 1): Leonardo D9 (PB5, TX coil gate driver).
+     *    - Channel 2 (Probe 2): ADC trigger / S&H timing test pin or ADC input node.
+     *    - Verification:
+     *      Trigger on falling edge of Channel 1 (TX-off).
+     *      Measure time to first Sample & Hold.
+     *      For activeDelayTicks = 4 (conservative initial minimum), measured time must equal
+     *      4 * 1.6 µs = 6.4 µs ± 0.1 µs without runtime compare push or jitter.
+     *
+     * 2. Inter-Pulse Phase Jitter Verification:
+     *    - Use persistence mode on oscilloscope triggered on TX-off.
+     *    - Compare consecutive pulses 0..13.
+     *    - Each consecutive pulse must increment sample acquisition point by exactly 1.6 µs
+     *      (25.6 CPU cycles @ 16 MHz). Jitter must be 0 CPU cycles because hardware Timer1
+     *      Compare Match B directly auto-triggers the ADC without software ISR latency.
+     *
+     * 3. Known Reference Component Decay (Capacitor / Calibration Coil):
+     *    - Connect a precision RC network (e.g. R = 1.0 kΩ, C = 22 nF -> Tau = 22.0 µs).
+     *    - Acquire 70-point reconstructed waveform in FelezJoo app.
+     *    - Estimated Tau from TauEstimator must match 22.0 µs within ± 5%.
+     * ============================================================
+     */
 }

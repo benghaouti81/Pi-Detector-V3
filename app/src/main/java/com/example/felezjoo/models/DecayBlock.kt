@@ -21,7 +21,8 @@ data class DecayBlock(
     val flags: Int = 0,
     val samplingConfiguration: SamplingConfiguration = SamplingConfiguration(sampleCount = sampleCount, sampleSpacingUs = sampleSpacingUs),
     val polarity: WaveformPolarity = samplingConfiguration.polarity,
-    val polarityMode: PolarityMode = samplingConfiguration.polarityMode
+    val polarityMode: PolarityMode = samplingConfiguration.polarityMode,
+    val timeAxisValid: Boolean = samplingConfiguration.timeAxisValid
 ) : Serializable {
 
     val isSaturated: Boolean

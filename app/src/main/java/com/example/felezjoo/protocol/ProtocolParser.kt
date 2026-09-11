@@ -34,21 +34,6 @@ class ProtocolParser(
         val bufferLen = bufferBytes.size
 
         while (readIndex < bufferLen) {
-            // Check for ASCII line prefix '#' or standard text lines if not at sync
-            if (bufferBytes[readIndex] == '#'.code.toByte()) {
-                val newlineIdx = findNewline(bufferBytes, readIndex, bufferLen)
-                if (newlineIdx != -1) {
-                    val line = String(bufferBytes, readIndex, newlineIdx - readIndex).trim()
-                    handleAsciiLine(line)
-                    readIndex = newlineIdx + 1
-                    // Skip optional '\n' if newline was '\r\n'
-                    if (readIndex < bufferLen && bufferBytes[readIndex] == '\n'.code.toByte()) {
-                        readIndex++
-                    }
-                    continue
-                }
-            }
-
             // Look for binary sync 0xF5 0x5A
             if (readIndex + 1 < bufferLen &&
                 bufferBytes[readIndex] == PacketConstants.SYNC_BYTE_0 &&
@@ -91,6 +76,39 @@ class ProtocolParser(
                 parseCompletePacket(packetBytes, version, packetType, payloadLen)
 
                 readIndex += totalExpectedLen
+            } else if (bufferBytes[readIndex] == '#'.code.toByte()) {
+                // Processing line starting with '#' (Requirement 7: max 512 bytes)
+                val newlineIdx = findNewline(bufferBytes, readIndex, bufferLen)
+                if (newlineIdx != -1) {
+                    val lineLen = newlineIdx - readIndex
+                    if (lineLen <= 512) {
+                        val line = String(bufferBytes, readIndex, lineLen).trim()
+                        if (line.isNotEmpty()) {
+                            handleAsciiLine(line)
+                        }
+                        readIndex = newlineIdx + 1
+                        if (readIndex < bufferLen && bufferBytes[readIndex] == '\n'.code.toByte()) {
+                            readIndex++
+                        }
+                        continue
+                    } else {
+                        // Line exceeded 512 bytes: skip corrupted '#' line and search for next SYNC (Requirement 7)
+                        val nextSync = findNextSync(bufferBytes, readIndex + 1, bufferLen)
+                        readIndex = nextSync
+                        continue
+                    }
+                } else {
+                    // No newline found yet
+                    if (bufferLen - readIndex >= 512) {
+                        // Corrupt line exceeded 512 bytes without newline: skip corrupted line and search for next SYNC
+                        val nextSync = findNextSync(bufferBytes, readIndex + 1, bufferLen)
+                        readIndex = nextSync
+                        continue
+                    } else {
+                        // Incomplete line, wait for more data up to 512 bytes
+                        break
+                    }
+                }
             } else {
                 // Not a sync byte: check if it's an ASCII line (e.g. text debug output)
                 val newlineIdx = findNewline(bufferBytes, readIndex, bufferLen)
@@ -136,6 +154,15 @@ class ProtocolParser(
             }
         }
         return -1
+    }
+
+    private fun findNextSync(bytes: ByteArray, start: Int, end: Int): Int {
+        for (i in start until (end - 1)) {
+            if (bytes[i] == PacketConstants.SYNC_BYTE_0 && bytes[i + 1] == PacketConstants.SYNC_BYTE_1) {
+                return i
+            }
+        }
+        return end
     }
 
     private fun handleAsciiLine(line: String) {
@@ -284,7 +311,9 @@ class ProtocolParser(
         val delayTicks = bb.getShort().toInt() and 0xFFFF
         val sampleCount = bb.getShort().toInt() and 0xFFFF
 
-        if (sampleCount <= 0 || sampleCount > 512) {
+        // Requirement 7: Validate exact payload length: 12 + sampleCount * 2 + 2
+        val expectedPayloadLen = 12 + (sampleCount * 2) + 2
+        if (sampleCount <= 0 || sampleCount > 512 || payloadLen != expectedPayloadLen) {
             val errRecord = RawPacketRecord(
                 packetType = PacketConstants.TYPE_RAW_BLOCK,
                 packetLength = payloadLen,
@@ -313,6 +342,8 @@ class ProtocolParser(
         }
         val flags = bb.getShort().toInt() and 0xFFFF
 
+        val isTimeAxisValid = (flags and PacketConstants.FLAGS_ETS_PHASE_STEPPED) != 0
+
         val record = RawPacketRecord(
             packetType = PacketConstants.TYPE_RAW_BLOCK,
             packetLength = payloadLen,
@@ -328,10 +359,10 @@ class ProtocolParser(
         )
         onRawPacketRecord(record)
 
-        val config = if (activeSamplingConfig.sampleCount == sampleCount) {
+        val config = if (activeSamplingConfig.sampleCount == sampleCount && activeSamplingConfig.timeAxisValid == isTimeAxisValid) {
             activeSamplingConfig
         } else {
-            activeSamplingConfig.copy(sampleCount = sampleCount)
+            activeSamplingConfig.copy(sampleCount = sampleCount, timeAxisValid = isTimeAxisValid)
         }
 
         val decayBlock = DecayBlock(
@@ -343,7 +374,8 @@ class ProtocolParser(
             sampleCount = sampleCount,
             rawSamples = samples,
             flags = flags,
-            samplingConfiguration = config
+            samplingConfiguration = config,
+            timeAxisValid = isTimeAxisValid
         )
 
         onDecayBlockParsed(decayBlock)

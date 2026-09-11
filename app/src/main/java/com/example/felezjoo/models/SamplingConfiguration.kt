@@ -16,8 +16,10 @@ data class SamplingConfiguration(
     val clockFrequencyHz: Long = 16_000_000L,
     val adcResolution: Int = 10,
     val delayUnitUs: Double = 1.6,
-    val minDelayTicks: Int = 1,
-    val maxDelayTicks: Int = 100,
+    // Conservative initial limit: 4 * 1.6 us = 6.4 us. Must be verified with hardware measurement.
+    val minDelayTicks: Int = 4,
+    val maxDelayTicks: Int = 50,
+    val timeAxisValid: Boolean = true,
     val integrationStartUs: Double = 10.0,
     val integrationWidthUs: Double = 30.0,
     val integrationEndUs: Double = 45.0,

@@ -63,6 +63,27 @@ fun LiveWaveformScreen(viewModel: FelezJooViewModel) {
             )
         }
 
+        if (!currentBlock.timeAxisValid) {
+            Surface(
+                color = Color(0xFF3E2723),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "⚠️ Legacy Firmware: Time axis may not reflect physical ETS phase steps.",
+                        color = Color(0xFFFFB74D),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+        }
+
         // Full Interactive Waveform Canvas
         Surface(
             color = LabSurface,

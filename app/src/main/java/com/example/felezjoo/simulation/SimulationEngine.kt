@@ -5,6 +5,7 @@ import com.example.felezjoo.dsp.EtsTransportOrder
 import com.example.felezjoo.models.DecayBlock
 import com.example.felezjoo.models.SamplingConfiguration
 import com.example.felezjoo.models.WaveformPolarity
+import com.example.felezjoo.protocol.PacketConstants
 import com.example.felezjoo.protocol.PacketGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -205,7 +206,7 @@ class SimulationEngine(
                 rawSamples = transportSamples,
                 firmwareVersion = "2.1-SIM",
                 protocolVersion = "1.0",
-                flags = if (currentAmp > 35.0) 0x01 else 0x00,
+                flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED,
                 samplingConfiguration = config,
                 polarity = polarity
             )

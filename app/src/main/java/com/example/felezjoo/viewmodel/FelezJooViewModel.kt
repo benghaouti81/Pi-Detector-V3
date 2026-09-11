@@ -552,7 +552,8 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setDelayTicks(ticks: Int) {
-        val safeTicks = ticks.coerceIn(1, 100)
+        // Conservative initial limit: 4 * 1.6 us = 6.4 us. Schedulability must be verified on hardware.
+        val safeTicks = ticks.coerceIn(4, 50)
         _samplingConfig.value = _samplingConfig.value.copy(
             delayUs = safeTicks * _samplingConfig.value.delayUnitUs
         )
