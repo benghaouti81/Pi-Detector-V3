@@ -15,15 +15,15 @@ data class SamplingConfiguration(
     val samplesPerPulse: Int = 5,
     val clockFrequencyHz: Long = 16_000_000L,
     val adcResolution: Int = 10,
-    val delayUnitUs: Double = 1.6,
+    val delayUnitUs: Double = DEFAULT_DELAY_UNIT_US,
     // Conservative initial limit: 4 * 1.6 us = 6.4 us. Must be verified with hardware measurement.
-    val minDelayTicks: Int = 4,
-    val maxDelayTicks: Int = 50,
+    val minDelayTicks: Int = MIN_DELAY_TICKS,
+    val maxDelayTicks: Int = MAX_DELAY_TICKS,
+    val delayTicks: Int = DEFAULT_DELAY_TICKS,
     val timeAxisValid: Boolean = true,
     val integrationStartUs: Double = 10.0,
     val integrationWidthUs: Double = 30.0,
     val integrationEndUs: Double = 45.0,
-    val delayUs: Double = 10.0,
     val regionAStartUs: Double = 8.0,
     val regionAEndUs: Double = 18.0,
     val regionBStartUs: Double = 18.0,
@@ -35,6 +35,20 @@ data class SamplingConfiguration(
     val transportOrder: com.example.felezjoo.dsp.EtsTransportOrder = com.example.felezjoo.dsp.EtsTransportOrder.CHRONOLOGICAL,
     val timeOrigin: String = "TX_OFF_PLUS_DELAY"
 ) : Serializable {
+
+    companion object {
+        const val MIN_DELAY_TICKS = 4
+        const val MAX_DELAY_TICKS = 50
+        const val DEFAULT_DELAY_TICKS = 10
+        const val DEFAULT_DELAY_UNIT_US = 1.6
+    }
+
+    /**
+     * Physical delay in microseconds derived directly from delayTicks:
+     * delayUs = delayTicks * delayUnitUs (e.g. 10 * 1.6 = 16.0 us)
+     */
+    val delayUs: Double
+        get() = delayTicks * delayUnitUs
 
     val maxAdcValue: Int
         get() = (1 shl adcResolution) - 1

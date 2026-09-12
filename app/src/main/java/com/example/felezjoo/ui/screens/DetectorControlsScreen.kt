@@ -116,8 +116,8 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
                 ControlSlider(
                     label = "Delay Ticks",
                     value = delayTicks.toFloat(),
-                    range = 1f..40f,
-                    unit = "ticks",
+                    range = com.example.felezjoo.models.SamplingConfiguration.MIN_DELAY_TICKS.toFloat()..com.example.felezjoo.models.SamplingConfiguration.MAX_DELAY_TICKS.toFloat(),
+                    unit = "ticks (%.1f µs)".format(delayTicks * 1.6),
                     onValueChange = { delayTicks = it.toInt() }
                 )
 

@@ -200,7 +200,6 @@ class SimulationEngine(
                 pulseRate = 200,
                 pulseWidthUs = 150,
                 delayTicks = 10,
-                delayUs = config.delayUs,
                 sampleSpacingUs = config.sampleSpacingUs,
                 sampleCount = sampleCount,
                 rawSamples = transportSamples,

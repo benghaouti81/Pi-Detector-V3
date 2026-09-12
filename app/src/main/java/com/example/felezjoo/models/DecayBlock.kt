@@ -11,19 +11,28 @@ data class DecayBlock(
     val timestamp: Long = System.currentTimeMillis(),
     val pulseRate: Int = 200,          // Hz
     val pulseWidthUs: Int = 150,       // us
-    val delayTicks: Int = 10,
-    val delayUs: Double = 16.0,
+    val delayTicks: Int = SamplingConfiguration.DEFAULT_DELAY_TICKS,
     val sampleSpacingUs: Double = 1.6,
     val sampleCount: Int = 70,
     val rawSamples: IntArray = IntArray(sampleCount),
     val firmwareVersion: String = "1.0",
     val protocolVersion: String = "1.0",
     val flags: Int = 0,
-    val samplingConfiguration: SamplingConfiguration = SamplingConfiguration(sampleCount = sampleCount, sampleSpacingUs = sampleSpacingUs),
+    val samplingConfiguration: SamplingConfiguration = SamplingConfiguration(
+        sampleCount = sampleCount,
+        sampleSpacingUs = sampleSpacingUs,
+        delayTicks = delayTicks
+    ),
     val polarity: WaveformPolarity = samplingConfiguration.polarity,
     val polarityMode: PolarityMode = samplingConfiguration.polarityMode,
-    val timeAxisValid: Boolean = samplingConfiguration.timeAxisValid
+    val timeAxisValid: Boolean = (flags and com.example.felezjoo.protocol.PacketConstants.FLAGS_ETS_PHASE_STEPPED) != 0
 ) : Serializable {
+
+    /**
+     * Physical delay in microseconds derived directly from delayTicks.
+     */
+    val delayUs: Double
+        get() = delayTicks * (if (samplingConfiguration.delayUnitUs > 0.0) samplingConfiguration.delayUnitUs else 1.6)
 
     val isSaturated: Boolean
         get() {

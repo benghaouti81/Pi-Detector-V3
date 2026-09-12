@@ -1315,8 +1315,9 @@ class FelezJooDspAndProtocolTest {
     }
 
     /**
-     * Requirement 7: Validate that parseRawBlock rejects mismatched payload length.
-     * Expected payload length = 12 + sampleCount * 2 + 2 = 154 for sampleCount=70.
+     * Requirement 7: Semantic Payload Validation:
+     * - sampleCount = 70, payloadLen = 150 must be rejected as BAD_LENGTH without unpacking samples.
+     * - sampleCount = 70, payloadLen = 154 must be accepted.
      */
     @Test
     fun testProtocolParserRejectsMismatchedPayloadLength() {
@@ -1325,14 +1326,17 @@ class FelezJooDspAndProtocolTest {
 
         val parser = ProtocolParser(
             onDecayBlockParsed = { validBlockReceived = it },
-            onRawPacketRecord = { if (!it.isValid) errorRecordReceived = it },
+            onRawPacketRecord = { record ->
+                if (!record.isValid) {
+                    errorRecordReceived = record
+                }
+            },
             onAsciiLineParsed = {},
             onSequenceGapDetected = { _, _ -> },
             onCrcErrorDetected = { _, _ -> }
         )
 
-        // Create a packet with corrupted payload length (150 instead of 154)
-        val samples = IntArray(70) { 500 }
+        val samples = IntArray(70) { 100 }
         val validPacket = PacketGenerator.createRawBlockPacket(
             sequence = 100L,
             timestamp = 1000L,
@@ -1341,12 +1345,13 @@ class FelezJooDspAndProtocolTest {
             flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
         )
 
-        // If header payload length is 150 instead of 154, expected packet size is 6 + 150 + 2 = 158 bytes
+        // Case A: Mismatched length (150 instead of 154) - even without modifying CRC,
+        // semantic check detects payloadLen != 12 + 70*2 + 2 and rejects immediately with BAD_LENGTH
         val corruptPacket = ByteArray(158)
         System.arraycopy(validPacket, 0, corruptPacket, 0, 156)
-        corruptPacket[4] = 150.toByte()
+        corruptPacket[4] = 150.toByte() // payloadLen low byte = 150
         corruptPacket[5] = 0.toByte()
-        // Recompute CRC over 0..155 so BAD_CRC doesn't mask BAD_LENGTH
+        // Compute CRC so packet format is otherwise syntactically complete
         val crc = Crc16Ccitt.compute(corruptPacket, 0, 156)
         corruptPacket[156] = (crc and 0xFF).toByte()
         corruptPacket[157] = ((crc shr 8) and 0xFF).toByte()
@@ -1356,14 +1361,110 @@ class FelezJooDspAndProtocolTest {
         assertNotNull("Parser must report error for mismatched payloadLen", errorRecordReceived)
         assertEquals(PacketErrorReason.BAD_LENGTH, errorRecordReceived!!.errorReason)
         assertEquals(null, validBlockReceived)
+
+        // Case B: Valid length (154 for 70 samples) is accepted
+        errorRecordReceived = null
+        parser.processIncomingBytes(validPacket, validPacket.size)
+        assertNotNull("Parser must accept valid packet with payloadLen=154", validBlockReceived)
+        assertEquals(100L, validBlockReceived!!.sequenceNumber)
+        assertEquals(70, validBlockReceived!!.sampleCount)
     }
 
     /**
-     * Requirement 7: Validate that line starting with '#' longer than 512 bytes
-     * is skipped without hanging or causing an infinite buffer loop.
+     * Test 1: Valid ASCII line < 512 bytes is parsed correctly.
      */
     @Test
-    fun testProtocolParserHandlesOverlongHashLineGracefully() {
+    fun testAsciiTest1ValidLineUnder512Bytes() {
+        var parsedLine: String? = null
+        val parser = ProtocolParser(
+            onDecayBlockParsed = {},
+            onRawPacketRecord = {},
+            onAsciiLineParsed = { parsedLine = it },
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        val lineText = "# CFG: MODE=ETS SAMPLES=70 SPACING=1.6\r\n"
+        val bytes = lineText.toByteArray(Charsets.US_ASCII)
+        parser.processIncomingBytes(bytes, bytes.size)
+
+        assertNotNull("Parser must deliver valid ASCII line", parsedLine)
+        assertEquals("# CFG: MODE=ETS SAMPLES=70 SPACING=1.6", parsedLine)
+        assertEquals("Buffer should be empty after processing line", 0, parser.rxBufferSize)
+    }
+
+    /**
+     * Test 2: Exact 512 bytes line starting with '#' is parsed without error.
+     */
+    @Test
+    fun testAsciiTest2Exact512BytesLine() {
+        var parsedLine: String? = null
+        val parser = ProtocolParser(
+            onDecayBlockParsed = {},
+            onRawPacketRecord = {},
+            onAsciiLineParsed = { parsedLine = it },
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        // Exact 512 bytes: '#' + 510 'A's + '\n' = 512 bytes total
+        val payload = "#" + "A".repeat(510) + "\n"
+        val bytes = payload.toByteArray(Charsets.US_ASCII)
+        assertEquals(512, bytes.size)
+
+        parser.processIncomingBytes(bytes, bytes.size)
+
+        assertNotNull("Parser must accept exact 512-byte line", parsedLine)
+        assertEquals("#" + "A".repeat(510), parsedLine)
+        assertEquals("Buffer should be reset after processing line", 0, parser.rxBufferSize)
+    }
+
+    /**
+     * Test 3: Overlong line > 512 bytes followed immediately by binary sync F5 5A.
+     * Corrupted ASCII line must be discarded and binary packet parsed immediately.
+     */
+    @Test
+    fun testAsciiTest3OverlongLineGreaterThan512FollowedImmediatelyBySync() {
+        var validBlockReceived: DecayBlock? = null
+        var asciiCount = 0
+
+        val parser = ProtocolParser(
+            onDecayBlockParsed = { validBlockReceived = it },
+            onRawPacketRecord = {},
+            onAsciiLineParsed = { asciiCount++ },
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        // 600 bytes corrupted '#' line without newline
+        val corruptHashBytes = ByteArray(600) { 'B'.code.toByte() }
+        corruptHashBytes[0] = '#'.code.toByte()
+
+        // Valid binary packet following immediately
+        val samples = IntArray(70) { 450 }
+        val validPacket = PacketGenerator.createRawBlockPacket(
+            sequence = 301L,
+            timestamp = 3000L,
+            delayTicks = 10,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+
+        val combinedStream = corruptHashBytes + validPacket
+        parser.processIncomingBytes(combinedStream, combinedStream.size)
+
+        assertNotNull("Parser must skip corrupted line and parse valid binary packet", validBlockReceived)
+        assertEquals(301L, validBlockReceived!!.sequenceNumber)
+        assertTrue(validBlockReceived!!.timeAxisValid)
+        assertEquals("Corrupted overlong line should not be dispatched as valid ASCII", 0, asciiCount)
+    }
+
+    /**
+     * Test 4: Fragmented overlong line across chunks (e.g. 200 + 200 + 200 bytes)
+     * followed by fragmented binary packet.
+     */
+    @Test
+    fun testAsciiTest4FragmentedLineAcrossChunks() {
         var validBlockReceived: DecayBlock? = null
 
         val parser = ProtocolParser(
@@ -1374,26 +1475,67 @@ class FelezJooDspAndProtocolTest {
             onCrcErrorDetected = { _, _ -> }
         )
 
-        // Generate corrupted '#' line of 600 bytes without newline
-        val corruptHashBytes = ByteArray(600) { 'A'.code.toByte() }
-        corruptHashBytes[0] = '#'.code.toByte()
+        // 600-byte corrupted '#' line
+        val corruptBytes = ByteArray(600) { 'C'.code.toByte() }
+        corruptBytes[0] = '#'.code.toByte()
 
-        // Valid packet right after
-        val samples = IntArray(70) { 400 }
+        // Valid binary packet
+        val samples = IntArray(70) { 500 }
         val validPacket = PacketGenerator.createRawBlockPacket(
-            sequence = 200L,
-            timestamp = 2000L,
+            sequence = 401L,
+            timestamp = 4000L,
             delayTicks = 10,
             samples = samples,
             flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
         )
 
-        val stream = corruptHashBytes + validPacket
-        parser.processIncomingBytes(stream, stream.size)
+        val fullStream = corruptBytes + validPacket
 
-        assertNotNull("Parser must skip corrupted overlong '#' line and parse following valid packet", validBlockReceived)
-        assertEquals(200L, validBlockReceived!!.sequenceNumber)
-        assertTrue(validBlockReceived!!.timeAxisValid)
+        // Feed in 100-byte fragments
+        var offset = 0
+        while (offset < fullStream.size) {
+            val chunkSize = minOf(100, fullStream.size - offset)
+            val chunk = fullStream.copyOfRange(offset, offset + chunkSize)
+            parser.processIncomingBytes(chunk, chunk.size)
+            offset += chunkSize
+        }
+
+        assertNotNull("Parser must recover from fragmented overlong line and parse packet", validBlockReceived)
+        assertEquals(401L, validBlockReceived!!.sequenceNumber)
+        assertEquals(70, validBlockReceived!!.sampleCount)
+    }
+
+    /**
+     * Test 5: Buffer size check: verify rxBuffer does not grow uncontrollably.
+     */
+    @Test
+    fun testAsciiTest5BufferSizeNotGrowingUncontrollably() {
+        val parser = ProtocolParser(
+            onDecayBlockParsed = {},
+            onRawPacketRecord = {},
+            onAsciiLineParsed = {},
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        // Feed 20 chunks of 100 bytes each of continuous non-newline data starting with '#'
+        // Total 2000 bytes fed
+        val chunk1 = ByteArray(100) { 'D'.code.toByte() }
+        chunk1[0] = '#'.code.toByte()
+        parser.processIncomingBytes(chunk1, chunk1.size)
+
+        val subsequentChunk = ByteArray(100) { 'D'.code.toByte() }
+        for (i in 1 until 20) {
+            parser.processIncomingBytes(subsequentChunk, subsequentChunk.size)
+            // rxBuffer size must NEVER exceed MAX_ASCII_LINE_LENGTH (512 bytes)
+            assertTrue(
+                "rxBuffer size (${parser.rxBufferSize}) must not exceed 512 bytes during overlong stream",
+                parser.rxBufferSize <= ProtocolParser.MAX_ASCII_LINE_LENGTH
+            )
+        }
+
+        // Buffer size must be constrained and not equal 2000
+        assertTrue("rxBuffer must not accumulate all 2000 bytes", parser.rxBufferSize < 600)
     }
 
     /**
@@ -1436,6 +1578,46 @@ class FelezJooDspAndProtocolTest {
         parser.processIncomingBytes(modernPacket, modernPacket.size)
         assertNotNull(parsedBlock)
         assertTrue("Firmware with FLAGS_ETS_PHASE_STEPPED must have timeAxisValid = true", parsedBlock!!.timeAxisValid)
+    }
+
+    /**
+     * Requirement 3: Delay unification test:
+     * 1 tick = 1.6 µs
+     * min = 4 ticks = 6.4 µs
+     * default = 10 ticks = 16.0 µs
+     * max = 50 ticks = 80.0 µs
+     */
+    @Test
+    fun testDelayUnificationBetweenFirmwareAndAndroid() {
+        assertEquals("MIN_DELAY_TICKS must be 4", 4, SamplingConfiguration.MIN_DELAY_TICKS)
+        assertEquals("MAX_DELAY_TICKS must be 50", 50, SamplingConfiguration.MAX_DELAY_TICKS)
+        assertEquals("DEFAULT_DELAY_TICKS must be 10", 10, SamplingConfiguration.DEFAULT_DELAY_TICKS)
+        assertEquals("DEFAULT_DELAY_UNIT_US must be 1.6", 1.6, SamplingConfiguration.DEFAULT_DELAY_UNIT_US, 0.0001)
+
+        // Default config: 10 ticks -> 16.0 µs
+        val defaultConfig = SamplingConfiguration()
+        assertEquals(10, defaultConfig.delayTicks)
+        assertEquals(16.0, defaultConfig.delayUs, 0.0001)
+
+        // Min config: 4 ticks -> 6.4 µs
+        val minConfig = SamplingConfiguration(delayTicks = 4)
+        assertEquals(4, minConfig.delayTicks)
+        assertEquals(6.4, minConfig.delayUs, 0.0001)
+
+        // Max config: 50 ticks -> 80.0 µs
+        val maxConfig = SamplingConfiguration(delayTicks = 50)
+        assertEquals(50, maxConfig.delayTicks)
+        assertEquals(80.0, maxConfig.delayUs, 0.0001)
+
+        // DecayBlock computed delayUs test
+        val blockDefault = DecayBlock(delayTicks = 10)
+        assertEquals(16.0, blockDefault.delayUs, 0.0001)
+
+        val blockMin = DecayBlock(delayTicks = 4)
+        assertEquals(6.4, blockMin.delayUs, 0.0001)
+
+        val blockMax = DecayBlock(delayTicks = 50)
+        assertEquals(80.0, blockMax.delayUs, 0.0001)
     }
 
     /*

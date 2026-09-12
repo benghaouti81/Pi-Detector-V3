@@ -16,9 +16,17 @@ class ProtocolParser(
     private val onSequenceGapDetected: (expected: Long, actual: Long) -> Unit,
     private val onCrcErrorDetected: (expected: Int, actual: Int) -> Unit
 ) {
+    companion object {
+        const val MAX_ASCII_LINE_LENGTH = 512
+        const val MAX_PAYLOAD_LENGTH = 1024
+    }
+
     private val rxBuffer = ByteArrayOutputStream(4096)
     private var lastSequenceNumber: Long = -1L
     private var activeSamplingConfig = SamplingConfiguration()
+
+    val rxBufferSize: Int
+        get() = synchronized(this) { rxBuffer.size() }
 
     fun updateSamplingConfig(config: SamplingConfiguration) {
         this.activeSamplingConfig = config
@@ -51,7 +59,7 @@ class ProtocolParser(
                         ((bufferBytes[readIndex + 5].toInt() and 0xFF) shl 8))
 
                 // Sanity check length (max reasonable detector payload is 1024 bytes)
-                if (payloadLen < 0 || payloadLen > 1024) {
+                if (payloadLen < 0 || payloadLen > MAX_PAYLOAD_LENGTH) {
                     // Corrupted header, skip sync and resynchronize
                     val badHeaderRecord = RawPacketRecord(
                         packetType = packetType,
@@ -77,11 +85,11 @@ class ProtocolParser(
 
                 readIndex += totalExpectedLen
             } else if (bufferBytes[readIndex] == '#'.code.toByte()) {
-                // Processing line starting with '#' (Requirement 7: max 512 bytes)
+                // Processing line starting with '#' (max 512 bytes)
                 val newlineIdx = findNewline(bufferBytes, readIndex, bufferLen)
                 if (newlineIdx != -1) {
                     val lineLen = newlineIdx - readIndex
-                    if (lineLen <= 512) {
+                    if (lineLen <= MAX_ASCII_LINE_LENGTH) {
                         val line = String(bufferBytes, readIndex, lineLen).trim()
                         if (line.isNotEmpty()) {
                             handleAsciiLine(line)
@@ -92,14 +100,14 @@ class ProtocolParser(
                         }
                         continue
                     } else {
-                        // Line exceeded 512 bytes: skip corrupted '#' line and search for next SYNC (Requirement 7)
+                        // Line exceeded 512 bytes: skip corrupted '#' line and search for next SYNC
                         val nextSync = findNextSync(bufferBytes, readIndex + 1, bufferLen)
                         readIndex = nextSync
                         continue
                     }
                 } else {
                     // No newline found yet
-                    if (bufferLen - readIndex >= 512) {
+                    if (bufferLen - readIndex >= MAX_ASCII_LINE_LENGTH) {
                         // Corrupt line exceeded 512 bytes without newline: skip corrupted line and search for next SYNC
                         val nextSync = findNextSync(bufferBytes, readIndex + 1, bufferLen)
                         readIndex = nextSync
@@ -246,47 +254,44 @@ class ProtocolParser(
 
     private fun parseCompletePacket(packetBytes: ByteArray, version: Byte, packetType: Byte, payloadLen: Int) {
         val totalLen = packetBytes.size
-        // Expected CRC is last 2 bytes little-endian
         val receivedCrc = ((packetBytes[totalLen - 2].toInt() and 0xFF) or
                 ((packetBytes[totalLen - 1].toInt() and 0xFF) shl 8))
-
-        // Compute CRC over bytes 0 until (totalLen - 2)
         val calculatedCrc = Crc16Ccitt.compute(packetBytes, 0, totalLen - 2)
-
-        if (receivedCrc != calculatedCrc) {
-            onCrcErrorDetected(calculatedCrc, receivedCrc)
-            val badCrcRecord = RawPacketRecord(
-                packetType = packetType,
-                packetLength = payloadLen,
-                receivedCrc = receivedCrc,
-                calculatedCrc = calculatedCrc,
-                isValid = false,
-                errorReason = PacketErrorReason.BAD_CRC,
-                rawBytes = packetBytes
-            )
-            onRawPacketRecord(badCrcRecord)
-            return
-        }
-
-        if (version != PacketConstants.CURRENT_PROTOCOL_VERSION) {
-            val badVersionRecord = RawPacketRecord(
-                packetType = packetType,
-                packetLength = payloadLen,
-                receivedCrc = receivedCrc,
-                calculatedCrc = calculatedCrc,
-                isValid = false,
-                errorReason = PacketErrorReason.UNKNOWN_VERSION,
-                rawBytes = packetBytes
-            )
-            onRawPacketRecord(badVersionRecord)
-            return
-        }
 
         when (packetType) {
             PacketConstants.TYPE_RAW_BLOCK -> {
-                parseRawBlock(packetBytes, payloadLen, receivedCrc, calculatedCrc)
+                parseRawBlock(packetBytes, version, payloadLen, receivedCrc, calculatedCrc)
             }
             else -> {
+                if (receivedCrc != calculatedCrc) {
+                    onCrcErrorDetected(calculatedCrc, receivedCrc)
+                    val badCrcRecord = RawPacketRecord(
+                        packetType = packetType,
+                        packetLength = payloadLen,
+                        receivedCrc = receivedCrc,
+                        calculatedCrc = calculatedCrc,
+                        isValid = false,
+                        errorReason = PacketErrorReason.BAD_CRC,
+                        rawBytes = packetBytes
+                    )
+                    onRawPacketRecord(badCrcRecord)
+                    return
+                }
+
+                if (version != PacketConstants.CURRENT_PROTOCOL_VERSION) {
+                    val badVersionRecord = RawPacketRecord(
+                        packetType = packetType,
+                        packetLength = payloadLen,
+                        receivedCrc = receivedCrc,
+                        calculatedCrc = calculatedCrc,
+                        isValid = false,
+                        errorReason = PacketErrorReason.UNKNOWN_VERSION,
+                        rawBytes = packetBytes
+                    )
+                    onRawPacketRecord(badVersionRecord)
+                    return
+                }
+
                 // General or command/status packet
                 val record = RawPacketRecord(
                     packetType = packetType,
@@ -302,31 +307,97 @@ class ProtocolParser(
         }
     }
 
-    private fun parseRawBlock(packetBytes: ByteArray, payloadLen: Int, receivedCrc: Int, calculatedCrc: Int) {
-        val bb = ByteBuffer.wrap(packetBytes).order(ByteOrder.LITTLE_ENDIAN)
-        bb.position(6) // Skip 2 sync, 1 ver, 1 type, 2 len
+    private fun parseRawBlock(packetBytes: ByteArray, version: Byte, payloadLen: Int, receivedCrc: Int, calculatedCrc: Int) {
+        // Step 1: Validate basic payload length (at least 12 bytes metadata + 0 samples + 2 flags = 14 bytes)
+        // Packet size must be at least 6 header + 14 payload + 2 CRC = 22 bytes
+        if (payloadLen < 14 || packetBytes.size < 22) {
+            val errRecord = RawPacketRecord(
+                packetType = PacketConstants.TYPE_RAW_BLOCK,
+                packetLength = payloadLen,
+                receivedCrc = receivedCrc,
+                calculatedCrc = calculatedCrc,
+                isValid = false,
+                errorReason = PacketErrorReason.BAD_LENGTH,
+                rawBytes = packetBytes
+            )
+            onRawPacketRecord(errRecord)
+            return
+        }
 
+        // Step 2: Read sampleCount from known location (bytes 16..17 in packetBytes, i.e. offset 10..11 in payload)
+        val sampleCount = (packetBytes[16].toInt() and 0xFF) or
+                ((packetBytes[17].toInt() and 0xFF) shl 8)
+
+        // Step 3: Calculate expected payload length: 12 + sampleCount * 2 + 2
+        val expectedPayloadLen = 12 + (sampleCount * 2) + 2
+
+        // Step 4: Compare payloadLen and guard sampleCount against overflow
+        if (sampleCount <= 0 || sampleCount > 512 || payloadLen != expectedPayloadLen || packetBytes.size != 6 + payloadLen + 2) {
+            val errRecord = RawPacketRecord(
+                packetType = PacketConstants.TYPE_RAW_BLOCK,
+                packetLength = payloadLen,
+                receivedCrc = receivedCrc,
+                calculatedCrc = calculatedCrc,
+                isValid = false,
+                errorReason = PacketErrorReason.BAD_LENGTH,
+                sampleCount = sampleCount,
+                rawBytes = packetBytes
+            )
+            onRawPacketRecord(errRecord)
+            return
+        }
+
+        // Step 5: Only then unpack metadata and samples
+        val bb = ByteBuffer.wrap(packetBytes).order(ByteOrder.LITTLE_ENDIAN)
+        bb.position(6) // Skip sync(2), ver(1), type(1), len(2)
         val sequence = bb.getInt().toLong() and 0xFFFFFFFFL
         val timestamp = bb.getInt().toLong() and 0xFFFFFFFFL
         val delayTicks = bb.getShort().toInt() and 0xFFFF
-        val sampleCount = bb.getShort().toInt() and 0xFFFF
+        val bbSampleCount = bb.getShort().toInt() and 0xFFFF // guaranteed == sampleCount
 
-        // Requirement 7: Validate exact payload length: 12 + sampleCount * 2 + 2
-        val expectedPayloadLen = 12 + (sampleCount * 2) + 2
-        if (sampleCount <= 0 || sampleCount > 512 || payloadLen != expectedPayloadLen) {
-            val errRecord = RawPacketRecord(
+        val samples = IntArray(sampleCount)
+        for (i in 0 until sampleCount) {
+            samples[i] = bb.getShort().toInt() and 0xFFFF
+        }
+
+        // Step 6: Read flags
+        val flags = bb.getShort().toInt() and 0xFFFF
+
+        // Step 7: CRC and Version validation
+        if (receivedCrc != calculatedCrc) {
+            onCrcErrorDetected(calculatedCrc, receivedCrc)
+            val badCrcRecord = RawPacketRecord(
                 packetType = PacketConstants.TYPE_RAW_BLOCK,
                 packetLength = payloadLen,
                 sequence = sequence,
                 receivedCrc = receivedCrc,
                 calculatedCrc = calculatedCrc,
                 isValid = false,
-                errorReason = PacketErrorReason.BAD_LENGTH,
+                errorReason = PacketErrorReason.BAD_CRC,
                 delayTicks = delayTicks,
                 sampleCount = sampleCount,
+                flags = flags,
                 rawBytes = packetBytes
             )
-            onRawPacketRecord(errRecord)
+            onRawPacketRecord(badCrcRecord)
+            return
+        }
+
+        if (version != PacketConstants.CURRENT_PROTOCOL_VERSION) {
+            val badVersionRecord = RawPacketRecord(
+                packetType = PacketConstants.TYPE_RAW_BLOCK,
+                packetLength = payloadLen,
+                sequence = sequence,
+                receivedCrc = receivedCrc,
+                calculatedCrc = calculatedCrc,
+                isValid = false,
+                errorReason = PacketErrorReason.UNKNOWN_VERSION,
+                delayTicks = delayTicks,
+                sampleCount = sampleCount,
+                flags = flags,
+                rawBytes = packetBytes
+            )
+            onRawPacketRecord(badVersionRecord)
             return
         }
 
@@ -336,12 +407,7 @@ class ProtocolParser(
         }
         lastSequenceNumber = sequence
 
-        val samples = IntArray(sampleCount)
-        for (i in 0 until sampleCount) {
-            samples[i] = bb.getShort().toInt() and 0xFFFF
-        }
-        val flags = bb.getShort().toInt() and 0xFFFF
-
+        // Step 8: Propagation of timeAxisValid directly from hardware flag
         val isTimeAxisValid = (flags and PacketConstants.FLAGS_ETS_PHASE_STEPPED) != 0
 
         val record = RawPacketRecord(
@@ -359,17 +425,24 @@ class ProtocolParser(
         )
         onRawPacketRecord(record)
 
-        val config = if (activeSamplingConfig.sampleCount == sampleCount && activeSamplingConfig.timeAxisValid == isTimeAxisValid) {
+        val config = if (activeSamplingConfig.sampleCount == sampleCount &&
+            activeSamplingConfig.timeAxisValid == isTimeAxisValid &&
+            activeSamplingConfig.delayTicks == delayTicks
+        ) {
             activeSamplingConfig
         } else {
-            activeSamplingConfig.copy(sampleCount = sampleCount, timeAxisValid = isTimeAxisValid)
+            activeSamplingConfig.copy(
+                sampleCount = sampleCount,
+                timeAxisValid = isTimeAxisValid,
+                delayTicks = delayTicks
+            )
         }
 
+        // Step 9: Create DecayBlock with timeAxisValid and computed delayUs
         val decayBlock = DecayBlock(
             sequenceNumber = sequence,
             timestamp = if (timestamp > 0) timestamp else System.currentTimeMillis(),
             delayTicks = delayTicks,
-            delayUs = delayTicks * config.delayUnitUs,
             sampleSpacingUs = config.sampleSpacingUs,
             sampleCount = sampleCount,
             rawSamples = samples,

@@ -95,7 +95,6 @@ class ReplayEngine(
                 pulseRate = entity.pulseRate,
                 pulseWidthUs = entity.pulseWidthUs,
                 delayTicks = entity.delayTicks,
-                delayUs = entity.delayUs,
                 sampleCount = finalSamples.size,
                 rawSamples = finalSamples,
                 samplingConfiguration = SamplingConfiguration(sampleCount = finalSamples.size)
