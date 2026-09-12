@@ -18,25 +18,108 @@ class ProtocolParser(
 ) {
     companion object {
         const val MAX_ASCII_LINE_LENGTH = 512
+        const val MAX_ASCII_LINE_BYTES = 512
         const val MAX_PAYLOAD_LENGTH = 1024
+        const val MAX_BINARY_PACKET_LENGTH = 6 + MAX_PAYLOAD_LENGTH + 2 // 1032
     }
 
-    private val rxBuffer = ByteArrayOutputStream(4096)
+    private val rxBuffer = ByteArrayOutputStream(MAX_BINARY_PACKET_LENGTH)
     private var lastSequenceNumber: Long = -1L
     private var activeSamplingConfig = SamplingConfiguration()
 
     val rxBufferSize: Int
         get() = synchronized(this) { rxBuffer.size() }
 
+    var peakRxBufferSize: Int = 0
+        private set
+
+    fun resetPeakRxBufferSize() {
+        synchronized(this) {
+            peakRxBufferSize = rxBuffer.size()
+        }
+    }
+
     fun updateSamplingConfig(config: SamplingConfiguration) {
         this.activeSamplingConfig = config
+    }
+
+    private fun writeToRxBuffer(data: ByteArray, offset: Int, len: Int) {
+        rxBuffer.write(data, offset, len)
+        val cur = rxBuffer.size()
+        if (cur > peakRxBufferSize) {
+            peakRxBufferSize = cur
+        }
+    }
+
+    private fun isBinaryStream(incoming: ByteArray, offset: Int, length: Int): Boolean {
+        val currentSize = rxBuffer.size()
+        if (currentSize >= 2) {
+            val buf = rxBuffer.toByteArray()
+            return buf[0] == PacketConstants.SYNC_BYTE_0 && buf[1] == PacketConstants.SYNC_BYTE_1
+        } else if (currentSize == 1) {
+            val buf = rxBuffer.toByteArray()
+            return buf[0] == PacketConstants.SYNC_BYTE_0 &&
+                    offset < length &&
+                    incoming[offset] == PacketConstants.SYNC_BYTE_1
+        } else {
+            return offset + 1 < length &&
+                    incoming[offset] == PacketConstants.SYNC_BYTE_0 &&
+                    incoming[offset + 1] == PacketConstants.SYNC_BYTE_1
+        }
+    }
+
+    private fun getExpectedBinaryPacketLength(incoming: ByteArray, offset: Int, length: Int): Int {
+        val currentSize = rxBuffer.size()
+        if (currentSize >= 6) {
+            val buf = rxBuffer.toByteArray()
+            val payloadLen = ((buf[4].toInt() and 0xFF) or ((buf[5].toInt() and 0xFF) shl 8))
+            if (payloadLen in 0..MAX_PAYLOAD_LENGTH) {
+                return 6 + payloadLen + 2
+            }
+        } else if (currentSize == 0 && offset + 6 <= length) {
+            val payloadLen = ((incoming[offset + 4].toInt() and 0xFF) or ((incoming[offset + 5].toInt() and 0xFF) shl 8))
+            if (payloadLen in 0..MAX_PAYLOAD_LENGTH) {
+                return 6 + payloadLen + 2
+            }
+        }
+        return MAX_BINARY_PACKET_LENGTH
     }
 
     @Synchronized
     fun processIncomingBytes(incoming: ByteArray, length: Int) {
         if (length <= 0) return
-        rxBuffer.write(incoming, 0, length)
 
+        var offset = 0
+        while (offset < length) {
+            val isBinary = isBinaryStream(incoming, offset, length)
+            val maxCap = if (isBinary) {
+                getExpectedBinaryPacketLength(incoming, offset, length)
+            } else {
+                MAX_ASCII_LINE_BYTES
+            }
+
+            var spaceLeft = maxCap - rxBuffer.size()
+            if (spaceLeft <= 0) {
+                parseRxBuffer()
+                spaceLeft = maxCap - rxBuffer.size()
+                if (spaceLeft <= 0) {
+                    // Buffer full without parsing progress: force reset to prevent deadlock
+                    rxBuffer.reset()
+                    spaceLeft = maxCap
+                }
+            }
+
+            val toWrite = minOf(length - offset, spaceLeft)
+            if (toWrite <= 0) break
+
+            writeToRxBuffer(incoming, offset, toWrite)
+            offset += toWrite
+
+            parseRxBuffer()
+        }
+    }
+
+    private fun parseRxBuffer() {
         val bufferBytes = rxBuffer.toByteArray()
         var readIndex = 0
         val bufferLen = bufferBytes.size
@@ -107,10 +190,14 @@ class ProtocolParser(
                     }
                 } else {
                     // No newline found yet
-                    if (bufferLen - readIndex >= MAX_ASCII_LINE_LENGTH) {
-                        // Corrupt line exceeded 512 bytes without newline: skip corrupted line and search for next SYNC
-                        val nextSync = findNextSync(bufferBytes, readIndex + 1, bufferLen)
+                    val nextSync = findNextSync(bufferBytes, readIndex + 1, bufferLen)
+                    if (nextSync < bufferLen) {
+                        // Binary sync appeared before newline: skip incomplete/corrupted '#' line and resume at SYNC
                         readIndex = nextSync
+                        continue
+                    } else if (bufferLen - readIndex >= MAX_ASCII_LINE_LENGTH) {
+                        // Corrupt line exceeded 512 bytes without newline: skip corrupted line
+                        readIndex = bufferLen
                         continue
                     } else {
                         // Incomplete line, wait for more data up to 512 bytes
@@ -118,6 +205,11 @@ class ProtocolParser(
                     }
                 }
             } else {
+                // Check if last byte is SYNC_BYTE_0: wait for possible SYNC_BYTE_1 in next chunk
+                if (readIndex == bufferLen - 1 && bufferBytes[readIndex] == PacketConstants.SYNC_BYTE_0) {
+                    break
+                }
+
                 // Not a sync byte: check if it's an ASCII line (e.g. text debug output)
                 val newlineIdx = findNewline(bufferBytes, readIndex, bufferLen)
                 if (newlineIdx != -1 && (newlineIdx - readIndex) < 128) {
@@ -141,6 +233,13 @@ class ProtocolParser(
                         }
                         continue
                     }
+                }
+
+                // If binary sync is found later in buffer, jump directly to it
+                val nextSync = findNextSync(bufferBytes, readIndex + 1, bufferLen)
+                if (nextSync < bufferLen) {
+                    readIndex = nextSync
+                    continue
                 }
 
                 // Discard single garbage byte to search next
@@ -198,6 +297,7 @@ class ProtocolParser(
             var mode = "ETS"
             var pulses = 14
             var samplesPerPulse = 5
+            var explicitDelayUnitUs: Double? = null
 
             if (content.contains("=")) {
                 // Key-value pairs
@@ -214,17 +314,20 @@ class ProtocolParser(
                             "mode" -> mode = v
                             "pulses", "pulses_per_frame" -> v.toIntOrNull()?.let { pulses = it }
                             "samples_per_pulse", "spp" -> v.toIntOrNull()?.let { samplesPerPulse = it }
+                            "delay_unit_us", "delay_unit" -> v.toDoubleOrNull()?.let { explicitDelayUnitUs = it }
+                            "delay_unit_ns" -> v.toDoubleOrNull()?.let { explicitDelayUnitUs = it / 1000.0 }
                         }
                     }
                 }
             } else if (tokens.size >= 2) {
-                // Positional tokens
+                // Positional tokens: sampleCount, spacingNs, adcBits, mode, pulses, samplesPerPulse, [delayUnitUs]
                 tokens.getOrNull(0)?.toIntOrNull()?.let { sampleCount = it }
                 tokens.getOrNull(1)?.toDoubleOrNull()?.let { spacingNs = it }
                 tokens.getOrNull(2)?.toIntOrNull()?.let { adcBits = it }
                 tokens.getOrNull(3)?.let { if (it.isNotBlank()) mode = it.trim() }
                 tokens.getOrNull(4)?.toIntOrNull()?.let { pulses = it }
                 tokens.getOrNull(5)?.toIntOrNull()?.let { samplesPerPulse = it }
+                tokens.getOrNull(6)?.toDoubleOrNull()?.let { explicitDelayUnitUs = it }
             }
 
             // Safe physical clamping
@@ -234,19 +337,24 @@ class ProtocolParser(
             pulses = pulses.coerceIn(1, 128)
             samplesPerPulse = samplesPerPulse.coerceIn(1, 128)
 
-            val spacingUs = spacingNs / 1000.0
-            val newConfig = SamplingConfiguration(
+            val sampleSpacingUs = spacingNs / 1000.0
+            // Decoupled delayUnitUs: hardware timer tick duration in firmware (1.6 us in Leonardo)
+            // Conceptually distinct from reconstructed sample spacing (sampleSpacingUs).
+            val delayUnitUs = explicitDelayUnitUs?.coerceIn(0.1, 1000.0)
+                ?: activeSamplingConfig.delayUnitUs
+
+            val newConfig = activeSamplingConfig.copy(
                 id = "device_reported_${sampleCount}",
                 sampleCount = sampleCount,
-                sampleSpacingUs = spacingUs,
+                sampleSpacingUs = sampleSpacingUs,
                 samplingMode = mode,
                 pulsesPerFrame = pulses,
                 samplesPerPulse = samplesPerPulse,
                 adcResolution = adcBits,
-                delayUnitUs = spacingUs
+                delayUnitUs = delayUnitUs
             )
             activeSamplingConfig = newConfig
-            onAsciiLineParsed("ACK: Config updated ($sampleCount samples, ${spacingUs}us, $mode)")
+            onAsciiLineParsed("ACK: Config updated ($sampleCount samples, ${sampleSpacingUs}us spacing, ${delayUnitUs}us delay unit, $mode)")
         } catch (e: Exception) {
             onAsciiLineParsed("ERR: Config parse error: ${e.message}")
         }
@@ -458,5 +566,6 @@ class ProtocolParser(
     fun reset() {
         rxBuffer.reset()
         lastSequenceNumber = -1L
+        peakRxBufferSize = 0
     }
 }

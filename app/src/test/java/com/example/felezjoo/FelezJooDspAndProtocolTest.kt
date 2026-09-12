@@ -1506,20 +1506,22 @@ class FelezJooDspAndProtocolTest {
     }
 
     /**
-     * Test 5: Buffer size check: verify rxBuffer does not grow uncontrollably.
+     * Test 5: Buffer size check: verify rxBuffer does not grow uncontrollably,
+     * enforcing a strict 512-byte cap before/during writing and between calls.
      */
     @Test
     fun testAsciiTest5BufferSizeNotGrowingUncontrollably() {
+        var parsedBlock: DecayBlock? = null
         val parser = ProtocolParser(
-            onDecayBlockParsed = {},
+            onDecayBlockParsed = { parsedBlock = it },
             onRawPacketRecord = {},
             onAsciiLineParsed = {},
             onSequenceGapDetected = { _, _ -> },
             onCrcErrorDetected = { _, _ -> }
         )
 
-        // Feed 20 chunks of 100 bytes each of continuous non-newline data starting with '#'
-        // Total 2000 bytes fed
+        // Part A: Incremental chunks of non-newline data starting with '#'
+        // Feed 20 chunks of 100 bytes each (2000 bytes total)
         val chunk1 = ByteArray(100) { 'D'.code.toByte() }
         chunk1[0] = '#'.code.toByte()
         parser.processIncomingBytes(chunk1, chunk1.size)
@@ -1527,15 +1529,55 @@ class FelezJooDspAndProtocolTest {
         val subsequentChunk = ByteArray(100) { 'D'.code.toByte() }
         for (i in 1 until 20) {
             parser.processIncomingBytes(subsequentChunk, subsequentChunk.size)
-            // rxBuffer size must NEVER exceed MAX_ASCII_LINE_LENGTH (512 bytes)
+            // rxBuffer size and peak size must NEVER exceed MAX_ASCII_LINE_LENGTH (512 bytes)
             assertTrue(
                 "rxBuffer size (${parser.rxBufferSize}) must not exceed 512 bytes during overlong stream",
                 parser.rxBufferSize <= ProtocolParser.MAX_ASCII_LINE_LENGTH
             )
+            assertTrue(
+                "peakRxBufferSize (${parser.peakRxBufferSize}) must not exceed 512 bytes during ASCII stream",
+                parser.peakRxBufferSize <= ProtocolParser.MAX_ASCII_LINE_LENGTH
+            )
         }
 
-        // Buffer size must be constrained and not equal 2000
-        assertTrue("rxBuffer must not accumulate all 2000 bytes", parser.rxBufferSize < 600)
+        // Buffer size must be constrained and never accumulate all 2000 bytes
+        assertTrue("rxBuffer must not accumulate 2000 bytes", parser.rxBufferSize <= ProtocolParser.MAX_ASCII_LINE_LENGTH)
+
+        // Part B: Single massive incoming chunk (5000 bytes) of ASCII garbage
+        parser.reset()
+        parser.resetPeakRxBufferSize()
+        val giantChunk = ByteArray(5000) { 'E'.code.toByte() }
+        giantChunk[0] = '#'.code.toByte()
+        parser.processIncomingBytes(giantChunk, giantChunk.size)
+        assertTrue(
+            "peakRxBufferSize (${parser.peakRxBufferSize}) must not exceed 512 bytes even when 5000-byte chunk arrives",
+            parser.peakRxBufferSize <= ProtocolParser.MAX_ASCII_LINE_LENGTH
+        )
+        assertTrue(
+            "rxBuffer size (${parser.rxBufferSize}) after giant chunk must not exceed 512 bytes",
+            parser.rxBufferSize <= ProtocolParser.MAX_ASCII_LINE_LENGTH
+        )
+
+        // Part C: Single massive incoming chunk (3000 bytes) followed immediately by valid binary packet
+        parser.reset()
+        parser.resetPeakRxBufferSize()
+        val garbagePrefix = ByteArray(3000) { 'X'.code.toByte() }
+        garbagePrefix[0] = '#'.code.toByte()
+
+        val samples = IntArray(70) { 420 }
+        val validPacket = PacketGenerator.createRawBlockPacket(
+            sequence = 501L,
+            timestamp = 5000L,
+            delayTicks = 10,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+        val combinedMassive = garbagePrefix + validPacket
+        parser.processIncomingBytes(combinedMassive, combinedMassive.size)
+
+        assertNotNull("Binary packet following massive ASCII chunk must be successfully parsed", parsedBlock)
+        assertEquals(501L, parsedBlock!!.sequenceNumber)
+        assertTrue(parsedBlock!!.timeAxisValid)
     }
 
     /**
@@ -1618,6 +1660,76 @@ class FelezJooDspAndProtocolTest {
 
         val blockMax = DecayBlock(delayTicks = 50)
         assertEquals(80.0, blockMax.delayUs, 0.0001)
+    }
+
+    /**
+     * Requirement 2: Separation of delayUnitUs and sampleSpacingUs.
+     * Verifies that delayUnitUs is not an alias or derived from sampleSpacingUs,
+     * both in configuration objects and in ProtocolParser ASCII config updates.
+     */
+    @Test
+    fun testDecoupledDelayUnitAndSampleSpacing() {
+        // 1. Decoupled in SamplingConfiguration
+        val customConfig = SamplingConfiguration(
+            sampleSpacingUs = 1.0,
+            delayUnitUs = 0.5,
+            delayTicks = 10
+        )
+        assertEquals(1.0, customConfig.sampleSpacingUs, 0.0001)
+        assertEquals(0.5, customConfig.delayUnitUs, 0.0001)
+        // delayUs = delayTicks * delayUnitUs = 10 * 0.5 = 5.0 us
+        assertEquals(5.0, customConfig.delayUs, 0.0001)
+
+        // 2. DecayBlock created with decoupled configuration
+        val customBlock = DecayBlock(
+            delayTicks = customConfig.delayTicks,
+            sampleSpacingUs = customConfig.sampleSpacingUs,
+            samplingConfiguration = customConfig
+        )
+        assertEquals(1.0, customBlock.sampleSpacingUs, 0.0001)
+        assertEquals(5.0, customBlock.delayUs, 0.0001)
+
+        // 3. ProtocolParser preserves delayUnitUs when ASCII config line is parsed without changing delay unit
+        var parsedBlock: DecayBlock? = null
+        val parser = ProtocolParser(
+            onDecayBlockParsed = { parsedBlock = it },
+            onRawPacketRecord = {},
+            onAsciiLineParsed = {},
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        // Parse standard config: 70 samples, 1000 ns (1.0 us) spacing
+        parser.parseConfigLine("#CONFIG:70,1000,10,ETS,14,5")
+
+        val samples = IntArray(70) { 100 }
+        val packet = PacketGenerator.createRawBlockPacket(
+            sequence = 601L,
+            timestamp = 6000L,
+            delayTicks = 10,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+        parser.processIncomingBytes(packet, packet.size)
+
+        assertNotNull(parsedBlock)
+        assertEquals(1.0, parsedBlock!!.sampleSpacingUs, 0.0001)
+        // delayUnitUs remained default (1.6 us), so delayTicks (10) * 1.6 = 16.0 us
+        assertEquals(16.0, parsedBlock!!.delayUs, 0.0001)
+
+        // 4. ProtocolParser with custom explicit delayUnitUs
+        parser.updateSamplingConfig(customConfig)
+        val packet2 = PacketGenerator.createRawBlockPacket(
+            sequence = 602L,
+            timestamp = 6050L,
+            delayTicks = 10,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+        parser.processIncomingBytes(packet2, packet2.size)
+
+        assertEquals(1.0, parsedBlock!!.sampleSpacingUs, 0.0001)
+        assertEquals(5.0, parsedBlock!!.delayUs, 0.0001)
     }
 
     /*
