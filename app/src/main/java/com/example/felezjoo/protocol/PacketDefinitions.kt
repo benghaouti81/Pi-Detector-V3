@@ -5,7 +5,9 @@ import java.io.Serializable
 object PacketConstants {
     const val SYNC_BYTE_0: Byte = 0xF5.toByte()
     const val SYNC_BYTE_1: Byte = 0x5A.toByte()
-    const val CURRENT_PROTOCOL_VERSION: Byte = 0x01.toByte()
+    const val PROTOCOL_VERSION_1: Byte = 0x01.toByte()
+    const val PROTOCOL_VERSION_2: Byte = 0x02.toByte()
+    const val CURRENT_PROTOCOL_VERSION: Byte = PROTOCOL_VERSION_2
 
     const val TYPE_RAW_BLOCK: Byte = 0x01.toByte()
     const val TYPE_CONFIG: Byte = 0x02.toByte()
@@ -15,13 +17,24 @@ object PacketConstants {
     const val TYPE_PING: Byte = 0x06.toByte()
     const val TYPE_DEVICE_INFO: Byte = 0x07.toByte()
 
-    // RAW_BLOCK packet sizing:
+    // RAW_BLOCK V1 packet sizing (legacy):
     // Header: 2 (sync) + 1 (ver) + 1 (type) + 2 (len=154) = 6 bytes
     // Payload: 4 (seq) + 4 (timestamp) + 2 (delay) + 2 (count=70) + 140 (70 samples * 2) + 2 (flags) = 154 bytes
     // CRC: 2 bytes
     // Total: 162 bytes
-    const val RAW_BLOCK_EXPECTED_PAYLOAD_LEN = 154
-    const val RAW_BLOCK_TOTAL_PACKET_LEN = 162
+    const val RAW_BLOCK_V1_EXPECTED_PAYLOAD_LEN = 154
+    const val RAW_BLOCK_V1_TOTAL_PACKET_LEN = 162
+
+    // RAW_BLOCK V2 packet sizing (current):
+    // Header: 2 (sync) + 1 (ver) + 1 (type) + 2 (len=158) = 6 bytes
+    // Payload: 4 (seq) + 4 (timestamp) + 2 (delay) + 2 (freq) + 2 (pulse) + 2 (count=70) + 140 (samples) + 2 (flags) = 158 bytes
+    // CRC: 2 bytes
+    // Total: 166 bytes
+    const val RAW_BLOCK_V2_EXPECTED_PAYLOAD_LEN = 158
+    const val RAW_BLOCK_V2_TOTAL_PACKET_LEN = 166
+
+    const val RAW_BLOCK_EXPECTED_PAYLOAD_LEN = RAW_BLOCK_V2_EXPECTED_PAYLOAD_LEN
+    const val RAW_BLOCK_TOTAL_PACKET_LEN = RAW_BLOCK_V2_TOTAL_PACKET_LEN
     const val RAW_BLOCK_SAMPLE_COUNT = 70
 
     // Flags
@@ -52,7 +65,9 @@ data class RawPacketRecord(
     val delayTicks: Int = 0,
     val sampleCount: Int = 0,
     val flags: Int = 0,
-    val rawBytes: ByteArray = ByteArray(0)
+    val rawBytes: ByteArray = ByteArray(0),
+    val frequencyHz: Int = 0,
+    val pulseUs: Int = 0
 ) : Serializable {
 
     val sequenceNumber: Long get() = sequence

@@ -164,6 +164,15 @@ volatile uint32_t bufferSequence
 volatile uint32_t bufferTimestampUs
     [BUFFER_COUNT];
 
+volatile uint16_t bufferDelayTicks
+    [BUFFER_COUNT];
+
+volatile uint16_t bufferFrequencyHz
+    [BUFFER_COUNT];
+
+volatile uint16_t bufferPulseUs
+    [BUFFER_COUNT];
+
 volatile uint8_t captureBuffer = 0xFF;
 
 
@@ -234,16 +243,16 @@ uint8_t commandLength = 0;
 
 
 /* ============================================================
- * PACKET V1
+ * PACKET V2
  * ============================================================
  */
 
-#define PACKET_SIZE      162
-#define PAYLOAD_LENGTH   154
+#define PACKET_SIZE      166
+#define PAYLOAD_LENGTH   158
 
 #define SYNC0             0xF5
 #define SYNC1             0x5A
-#define PROTOCOL_VERSION  0x01
+#define PROTOCOL_VERSION  0x02
 #define RAW_BLOCK         0x01
 
 
@@ -404,13 +413,26 @@ static void buildPacket(
         bufferTimestampUs[buffer]
     );
 
+    /*
+     * Per-buffer configuration metadata captured when ETS frame started:
+     */
     put16(
         &packet[14],
-        activeDelayTicks
+        bufferDelayTicks[buffer]
     );
 
     put16(
         &packet[16],
+        bufferFrequencyHz[buffer]
+    );
+
+    put16(
+        &packet[18],
+        bufferPulseUs[buffer]
+    );
+
+    put16(
+        &packet[20],
         ETS_SAMPLES
     );
 
@@ -420,7 +442,7 @@ static void buildPacket(
     for (uint8_t i = 0; i < ETS_SAMPLES; i++)
     {
         put16(
-            &packet[18 + ((uint16_t)i * 2)],
+            &packet[22 + ((uint16_t)i * 2)],
             sampleBuffer[buffer][i]
         );
     }
@@ -429,18 +451,18 @@ static void buildPacket(
      * Flags: FLAGS_ETS_PHASE_STEPPED (0x0001) marks phase-stepped physical timing.
      */
     put16(
-        &packet[158],
+        &packet[162],
         FLAGS_ETS_PHASE_STEPPED
     );
 
     /*
-     * CRC over bytes 0..159.
+     * CRC over bytes 0..163 (164 bytes).
      */
     uint16_t crc =
-        crc16_ccitt(packet, 160);
+        crc16_ccitt(packet, 164);
 
     put16(
-        &packet[160],
+        &packet[164],
         crc
     );
 }
@@ -476,15 +498,20 @@ static void adcStop()
 }
 
 /*
- * Desired Sample & Hold time in CPU cycles relative to TX-off (TCNT1 = 0):
- * desiredSampleHoldTime = delay + (pulse + slot * 14) * 1.6 us
+ * Desired Sample & Hold time in CPU cycles:
+ * desiredSampleHoldTime = pulseWidth + delay + ETS phase offset
+ *
+ * pulseWidth: activePulseUs * 16 CPU cycles (1 us = 16 CPU cycles @ 16 MHz)
+ * delay: activeDelayTicks in 1.6 us ticks (25.6 cycles / tick)
+ * phase: (pulse + slot * ETS_PULSES) in 1.6 us ticks (25.6 cycles / tick)
  */
 static inline uint32_t calculateDesiredSampleHoldCycles(uint8_t pulse, uint8_t slot)
 {
-    uint16_t phase = (uint16_t)pulse + (uint16_t)slot * ETS_PULSES;
+    uint32_t pulseCycles = (uint32_t)activePulseUs * 16UL;
     uint32_t delayCycles = ets_ticks_to_cpu_cycles(activeDelayTicks);
-    uint32_t phaseCycles = ets_ticks_to_cpu_cycles(phase);
-    return delayCycles + phaseCycles;
+    uint16_t phaseTicks = (uint16_t)pulse + (uint16_t)slot * ETS_PULSES;
+    uint32_t phaseCycles = ets_ticks_to_cpu_cycles(phaseTicks);
+    return pulseCycles + delayCycles + phaseCycles;
 }
 
 /*
@@ -518,6 +545,15 @@ static uint16_t calculateSampleOffset(uint8_t slot)
  */
 static void adcAcquisitionStart()
 {
+    /*
+     * Guard: Never start acquisition if current ETS frame has already received
+     * all ETS_PULSES (14) physical pulses.
+     */
+    if (etsPulse >= ETS_PULSES)
+    {
+        return;
+    }
+
     if (captureBuffer == 0xFF)
     {
         if (reserveCaptureBuffer() == 0xFF)
@@ -635,6 +671,9 @@ ISR(ADC_vect)
     if (!etsFrameActive)
         return;
 
+    if (etsPulse >= ETS_PULSES)
+        return;
+
     buffer = captureBuffer;
 
     if (buffer == 0xFF)
@@ -664,7 +703,7 @@ ISR(ADC_vect)
         (etsPulse +
          ((uint8_t)slot * ETS_PULSES));
 
-    if (index < ETS_SAMPLES)
+    if (etsPulse < ETS_PULSES && index < ETS_SAMPLES)
     {
         sampleBuffer[buffer][index] =
             value;
@@ -924,6 +963,16 @@ ISR(TIMER3_COMPB_vect)
     }
 
     /*
+     * Guard: If current ETS frame has completed all ETS_PULSES (14) physical pulses,
+     * do NOT start another ADC acquisition. Wait for serviceFrameCompletion() in loop()
+     * to transition the finished buffer to BUF_READY and reset etsFrameActive.
+     */
+    if (etsFrameActive && etsPulse >= ETS_PULSES)
+    {
+        return;
+    }
+
+    /*
      * Start a new ETS frame only if the previous
      * 14-pulse frame has completed.
      */
@@ -965,9 +1014,20 @@ ISR(TIMER3_COMPB_vect)
         adcResultSlot = 0;
 
         /*
-         * Device-local timestamp at frame start.
+         * Capture active configuration metadata consistently with this frame.
          */
         bufferTimestampUs[captureBuffer] = micros();
+        bufferDelayTicks[captureBuffer] = activeDelayTicks;
+        bufferFrequencyHz[captureBuffer] = activeFrequency;
+        bufferPulseUs[captureBuffer] = activePulseUs;
+    }
+
+    /*
+     * Never start ADC acquisition if all 14 pulses for this frame have finished.
+     */
+    if (etsPulse >= ETS_PULSES)
+    {
+        return;
     }
 
     /*
@@ -1891,6 +1951,15 @@ void setup()
 
         bufferTimestampUs[i] =
             0;
+
+        bufferDelayTicks[i] =
+            DEFAULT_DELAY_TICKS;
+
+        bufferFrequencyHz[i] =
+            DEFAULT_FREQUENCY_HZ;
+
+        bufferPulseUs[i] =
+            DEFAULT_PULSE_US;
     }
 
     /*

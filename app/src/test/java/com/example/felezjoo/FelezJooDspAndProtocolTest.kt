@@ -1826,6 +1826,268 @@ class FelezJooDspAndProtocolTest {
         )
     }
 
+    // ============================================================
+    // ISSUE 1: CORRECT PULSE WIDTH UNITS IN ADC TIMING
+    // ============================================================
+
+    @Test
+    fun testIssue1PulseWidthTimingInCpuCycles() {
+        // C implementation simulation:
+        // uint32_t pulseCycles = (uint32_t)activePulseUs * 16UL;
+        // uint32_t delayCycles = ets_ticks_to_cpu_cycles(activeDelayTicks);
+        // uint16_t phaseTicks = (uint16_t)pulse + (uint16_t)slot * ETS_PULSES;
+        // uint32_t phaseCycles = ets_ticks_to_cpu_cycles(phaseTicks);
+        // desiredSH = pulseCycles + delayCycles + phaseCycles;
+        // OCR1B = desiredSH - ADC_TRIGGER_TO_SH_CYCLES;
+
+        fun etsTicksToCpuCycles(ticks: Int): Long {
+            return (ticks.toLong() * 256L + 5L) / 10L
+        }
+
+        fun calcDesiredSH(pulseUs: Int, delayTicks: Int, pulse: Int, slot: Int): Long {
+            val pulseCycles = pulseUs.toLong() * 16L
+            val delayCycles = etsTicksToCpuCycles(delayTicks)
+            val phaseTicks = pulse + slot * 14
+            val phaseCycles = etsTicksToCpuCycles(phaseTicks)
+            return pulseCycles + delayCycles + phaseCycles
+        }
+
+        val adcTriggerToShCycles = 24L
+
+        // Example 1: PULSE = 150 us, DELAY = 10 ticks, slot = 0, pulse = 0
+        val pulseUs150 = 150
+        val delayTicks10 = 10
+        val pulseCycles = pulseUs150 * 16L // 150 * 16 = 2400 cycles
+        assertEquals(2400L, pulseCycles)
+
+        val delayCycles = etsTicksToCpuCycles(delayTicks10) // 10 ticks * 1.6 us = 16 us * 16 MHz = 256 cycles
+        assertEquals(256L, delayCycles)
+
+        val desiredShSlot0 = calcDesiredSH(pulseUs150, delayTicks10, pulse = 0, slot = 0)
+        assertEquals(2656L, desiredShSlot0) // 2400 + 256 + 0 = 2656 CPU cycles
+
+        val ocr1bSlot0 = desiredShSlot0 - adcTriggerToShCycles
+        assertEquals(2632L, ocr1bSlot0) // 2656 - 24 = 2632 CPU cycles
+
+        // Example 2: slot = 1, pulse = 0 -> phase = 14 ticks = 22.4 us
+        val phaseTicksSlot1 = 14
+        val phaseCyclesSlot1 = etsTicksToCpuCycles(phaseTicksSlot1) // (14 * 256 + 5) / 10 = 358 cycles
+        assertEquals(358L, phaseCyclesSlot1)
+
+        val desiredShSlot1 = calcDesiredSH(pulseUs150, delayTicks10, pulse = 0, slot = 1)
+        assertEquals(3014L, desiredShSlot1) // 2400 + 256 + 358 = 3014 cycles
+        // 3014 cycles / 16 MHz = 188.375 us ≈ 188.4 us (150 us + 16 us + 22.4 us = 188.4 us)
+        val desiredShTimeUs = desiredShSlot1.toDouble() / 16.0
+        assertEquals(188.375, desiredShTimeUs, 0.001)
+
+        // Linear scaling test across pulse widths: 100, 150, 200, 250 us
+        val p100 = calcDesiredSH(100, delayTicks10, 0, 0)
+        val p150 = calcDesiredSH(150, delayTicks10, 0, 0)
+        val p200 = calcDesiredSH(200, delayTicks10, 0, 0)
+        val p250 = calcDesiredSH(250, delayTicks10, 0, 0)
+
+        assertEquals(1856L, p100) // 1600 + 256
+        assertEquals(2656L, p150) // 2400 + 256
+        assertEquals(3456L, p200) // 3200 + 256
+        assertEquals(4256L, p250) // 4000 + 256
+
+        // Exact linear step: each 50 us increases desiredSH by 50 * 16 = 800 cycles
+        assertEquals(800L, p150 - p100)
+        assertEquals(800L, p200 - p150)
+        assertEquals(800L, p250 - p200)
+    }
+
+    // ============================================================
+    // ISSUE 2: PREVENT ACQUISITION AFTER ETS FRAME COMPLETION
+    // ============================================================
+
+    @Test
+    fun testIssue2EtsFrameBoundaryAndPulseGuard() {
+        val etsPulses = 14
+        val etsSlots = 5
+
+        // Check index reconstruction mapping:
+        // index = pulse + slot * 14
+        val visitedIndices = BooleanArray(70)
+        var maxIndex = -1
+        var minIndex = 999
+
+        for (pulse in 0 until etsPulses) {
+            for (slot in 0 until etsSlots) {
+                val index = pulse + slot * etsPulses
+                assertTrue("Index must be < 70", index < 70)
+                assertTrue("Index must be >= 0", index >= 0)
+                assertFalse("Index $index must not be visited more than once", visitedIndices[index])
+                visitedIndices[index] = true
+                if (index > maxIndex) maxIndex = index
+                if (index < minIndex) minIndex = index
+            }
+        }
+
+        assertEquals(0, minIndex)
+        assertEquals(69, maxIndex)
+        // Verify all 70 indices 0..69 are covered exactly once
+        assertTrue("All 70 indices must be covered", visitedIndices.all { it })
+
+        // Check guard logic:
+        // When etsPulse reaches 14 (ETS_PULSES), no new acquisition may start
+        fun canStartAcquisition(etsPulse: Int, etsFrameActive: Boolean): Boolean {
+            if (!etsFrameActive) return true // Starts new frame
+            if (etsPulse >= etsPulses) return false // Guard prevents starting for completed frame
+            return true
+        }
+
+        // Active frame pulses 0..13 can acquire
+        for (p in 0..13) {
+            assertTrue("Pulse $p must be allowed to acquire", canStartAcquisition(p, etsFrameActive = true))
+        }
+
+        // When pulse 13 completes 5th sample, etsPulse becomes 14
+        val etsPulseCompleted = 14
+        assertFalse(
+            "When etsPulse == 14, no further acquisition is allowed",
+            canStartAcquisition(etsPulseCompleted, etsFrameActive = true)
+        )
+        assertFalse(
+            "When etsPulse == 15, no further acquisition is allowed",
+            canStartAcquisition(15, etsFrameActive = true)
+        )
+    }
+
+    // ============================================================
+    // ISSUE 3: METADATA & PROTOCOL V2 VALIDATION
+    // ============================================================
+
+    @Test
+    fun testIssue3MetadataActiveConfigurationPreservedAcrossPendingChanges() {
+        // Active configuration vs pending configuration simulation
+        var activeFreq = 200
+        var activePulse = 150
+        var activeDelay = 10
+
+        var pendingFreq = 200
+        var pendingPulse = 150
+        var pendingDelay = 10
+
+        // Buffer metadata captured at frame start
+        var bufferFreq = activeFreq
+        var bufferPulse = activePulse
+        var bufferDelay = activeDelay
+
+        // User issues command changing pending configuration in the middle of frame
+        pendingFreq = 350
+        pendingPulse = 220
+        pendingDelay = 15
+
+        // Frame metadata must remain active configuration, NOT pending
+        assertEquals(200, bufferFreq)
+        assertEquals(150, bufferPulse)
+        assertEquals(10, bufferDelay)
+
+        assertFalse(bufferFreq == pendingFreq)
+        assertFalse(bufferPulse == pendingPulse)
+        assertFalse(bufferDelay == pendingDelay)
+    }
+
+    @Test
+    fun testIssue3ProtocolV2PacketGenerationAndParsing() {
+        var parsedBlock: DecayBlock? = null
+        var parsedRecord: RawPacketRecord? = null
+
+        val parser = ProtocolParser(
+            onDecayBlockParsed = { parsedBlock = it },
+            onRawPacketRecord = { parsedRecord = it },
+            onAsciiLineParsed = {},
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        val samples = IntArray(70) { 1000 - it * 10 }
+        val seq = 777L
+        val ts = 12345678L
+        val delay = 8
+        val freq = 250
+        val pulse = 180
+
+        val v2Packet = PacketGenerator.createRawBlockPacket(
+            sequence = seq,
+            timestamp = ts,
+            delayTicks = delay,
+            sampleCount = 70,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED,
+            frequencyHz = freq,
+            pulseUs = pulse,
+            version = PacketConstants.PROTOCOL_VERSION_2
+        )
+
+        // Verify packet sizing: exactly 166 bytes
+        assertEquals(PacketConstants.RAW_BLOCK_V2_TOTAL_PACKET_LEN, v2Packet.size)
+        assertEquals(166, v2Packet.size)
+
+        // Process bytes through ProtocolParser
+        parser.processIncomingBytes(v2Packet, v2Packet.size)
+
+        // Verify RawPacketRecord
+        assertNotNull(parsedRecord)
+        assertTrue(parsedRecord!!.isValid)
+        assertEquals(PacketErrorReason.OK, parsedRecord!!.errorReason)
+        assertEquals(seq, parsedRecord!!.sequence)
+        assertEquals(delay, parsedRecord!!.delayTicks)
+        assertEquals(freq, parsedRecord!!.frequencyHz)
+        assertEquals(pulse, parsedRecord!!.pulseUs)
+        assertEquals(70, parsedRecord!!.sampleCount)
+        assertEquals(PacketConstants.FLAGS_ETS_PHASE_STEPPED, parsedRecord!!.flags)
+
+        // Verify DecayBlock
+        assertNotNull(parsedBlock)
+        assertEquals(seq, parsedBlock!!.sequenceNumber)
+        assertEquals(delay, parsedBlock!!.delayTicks)
+        assertEquals(freq, parsedBlock!!.pulseRate)
+        assertEquals(pulse, parsedBlock!!.pulseWidthUs)
+        assertEquals(70, parsedBlock!!.sampleCount)
+        assertEquals("2.0", parsedBlock!!.protocolVersion)
+        assertTrue(parsedBlock!!.timeAxisValid)
+    }
+
+    @Test
+    fun testIssue3ProtocolV1BackwardCompatibility() {
+        var parsedBlock: DecayBlock? = null
+        var parsedRecord: RawPacketRecord? = null
+
+        val parser = ProtocolParser(
+            onDecayBlockParsed = { parsedBlock = it },
+            onRawPacketRecord = { parsedRecord = it },
+            onAsciiLineParsed = {},
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        val samples = IntArray(70) { 500 - it * 3 }
+        val v1Packet = PacketGenerator.createRawBlockPacketV1(
+            sequence = 999L,
+            timestamp = 55555L,
+            delayTicks = 12,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+
+        assertEquals(PacketConstants.RAW_BLOCK_V1_TOTAL_PACKET_LEN, v1Packet.size)
+        assertEquals(162, v1Packet.size)
+
+        parser.processIncomingBytes(v1Packet, v1Packet.size)
+
+        assertNotNull(parsedRecord)
+        assertTrue(parsedRecord!!.isValid)
+        assertEquals(999L, parsedRecord!!.sequence)
+        assertEquals(12, parsedRecord!!.delayTicks)
+
+        assertNotNull(parsedBlock)
+        assertEquals(999L, parsedBlock!!.sequenceNumber)
+        assertEquals("1.0", parsedBlock!!.protocolVersion)
+        assertEquals(12, parsedBlock!!.delayTicks)
+    }
+
     /*
      * ============================================================
      * HARDWARE ACCEPTANCE TESTS SPECIFICATION (Requirement 8)

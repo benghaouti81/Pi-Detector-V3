@@ -386,7 +386,7 @@ class ProtocolParser(
                     return
                 }
 
-                if (version != PacketConstants.CURRENT_PROTOCOL_VERSION) {
+                if (version != PacketConstants.PROTOCOL_VERSION_1 && version != PacketConstants.PROTOCOL_VERSION_2) {
                     val badVersionRecord = RawPacketRecord(
                         packetType = packetType,
                         packetLength = payloadLen,
@@ -416,9 +416,12 @@ class ProtocolParser(
     }
 
     private fun parseRawBlock(packetBytes: ByteArray, version: Byte, payloadLen: Int, receivedCrc: Int, calculatedCrc: Int) {
-        // Step 1: Validate basic payload length (at least 12 bytes metadata + 0 samples + 2 flags = 14 bytes)
-        // Packet size must be at least 6 header + 14 payload + 2 CRC = 22 bytes
-        if (payloadLen < 14 || packetBytes.size < 22) {
+        val isV2 = (version == PacketConstants.PROTOCOL_VERSION_2)
+        val headerMetaLen = if (isV2) 16 else 12
+
+        // Step 1: Validate basic payload length (at least headerMetaLen bytes metadata + 0 samples + 2 flags)
+        // Packet size must be at least 6 header + (headerMetaLen + 2) payload + 2 CRC
+        if (payloadLen < (headerMetaLen + 2) || packetBytes.size < (6 + headerMetaLen + 2 + 2)) {
             val errRecord = RawPacketRecord(
                 packetType = PacketConstants.TYPE_RAW_BLOCK,
                 packetLength = payloadLen,
@@ -432,12 +435,15 @@ class ProtocolParser(
             return
         }
 
-        // Step 2: Read sampleCount from known location (bytes 16..17 in packetBytes, i.e. offset 10..11 in payload)
-        val sampleCount = (packetBytes[16].toInt() and 0xFF) or
-                ((packetBytes[17].toInt() and 0xFF) shl 8)
+        // Step 2: Read sampleCount from known location:
+        // V1: offset 16..17 in packetBytes (offset 10..11 in payload)
+        // V2: offset 20..21 in packetBytes (offset 14..15 in payload)
+        val countOffset = if (isV2) 20 else 16
+        val sampleCount = (packetBytes[countOffset].toInt() and 0xFF) or
+                ((packetBytes[countOffset + 1].toInt() and 0xFF) shl 8)
 
-        // Step 3: Calculate expected payload length: 12 + sampleCount * 2 + 2
-        val expectedPayloadLen = 12 + (sampleCount * 2) + 2
+        // Step 3: Calculate expected payload length: headerMetaLen + sampleCount * 2 + 2
+        val expectedPayloadLen = headerMetaLen + (sampleCount * 2) + 2
 
         // Step 4: Compare payloadLen and guard sampleCount against overflow
         if (sampleCount <= 0 || sampleCount > 512 || payloadLen != expectedPayloadLen || packetBytes.size != 6 + payloadLen + 2) {
@@ -461,6 +467,8 @@ class ProtocolParser(
         val sequence = bb.getInt().toLong() and 0xFFFFFFFFL
         val timestamp = bb.getInt().toLong() and 0xFFFFFFFFL
         val delayTicks = bb.getShort().toInt() and 0xFFFF
+        val frequencyHz = if (isV2) (bb.getShort().toInt() and 0xFFFF) else 200
+        val pulseUs = if (isV2) (bb.getShort().toInt() and 0xFFFF) else 150
         val bbSampleCount = bb.getShort().toInt() and 0xFFFF // guaranteed == sampleCount
 
         val samples = IntArray(sampleCount)
@@ -485,13 +493,15 @@ class ProtocolParser(
                 delayTicks = delayTicks,
                 sampleCount = sampleCount,
                 flags = flags,
-                rawBytes = packetBytes
+                rawBytes = packetBytes,
+                frequencyHz = frequencyHz,
+                pulseUs = pulseUs
             )
             onRawPacketRecord(badCrcRecord)
             return
         }
 
-        if (version != PacketConstants.CURRENT_PROTOCOL_VERSION) {
+        if (version != PacketConstants.PROTOCOL_VERSION_1 && version != PacketConstants.PROTOCOL_VERSION_2) {
             val badVersionRecord = RawPacketRecord(
                 packetType = PacketConstants.TYPE_RAW_BLOCK,
                 packetLength = payloadLen,
@@ -503,7 +513,9 @@ class ProtocolParser(
                 delayTicks = delayTicks,
                 sampleCount = sampleCount,
                 flags = flags,
-                rawBytes = packetBytes
+                rawBytes = packetBytes,
+                frequencyHz = frequencyHz,
+                pulseUs = pulseUs
             )
             onRawPacketRecord(badVersionRecord)
             return
@@ -529,7 +541,9 @@ class ProtocolParser(
             delayTicks = delayTicks,
             sampleCount = sampleCount,
             flags = flags,
-            rawBytes = packetBytes
+            rawBytes = packetBytes,
+            frequencyHz = frequencyHz,
+            pulseUs = pulseUs
         )
         onRawPacketRecord(record)
 
@@ -546,17 +560,20 @@ class ProtocolParser(
             )
         }
 
-        // Step 9: Create DecayBlock with timeAxisValid and computed delayUs
+        // Step 9: Create DecayBlock with timeAxisValid, computed delayUs, and frame metadata
         val decayBlock = DecayBlock(
             sequenceNumber = sequence,
             timestamp = if (timestamp > 0) timestamp else System.currentTimeMillis(),
+            pulseRate = if (frequencyHz > 0) frequencyHz else 200,
+            pulseWidthUs = if (pulseUs > 0) pulseUs else 150,
             delayTicks = delayTicks,
             sampleSpacingUs = config.sampleSpacingUs,
             sampleCount = sampleCount,
             rawSamples = samples,
             flags = flags,
             samplingConfiguration = config,
-            timeAxisValid = isTimeAxisValid
+            timeAxisValid = isTimeAxisValid,
+            protocolVersion = if (isV2) "2.0" else "1.0"
         )
 
         onDecayBlockParsed(decayBlock)
