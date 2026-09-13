@@ -469,7 +469,8 @@ static void buildPacket(
 
 static void adcStop()
 {
-    ADCSRA &= (uint8_t)~_BV(ADIE);
+    ADCSRA &= (uint8_t)~( _BV(ADATE) | _BV(ADIE) );
+    ADCSRA |= _BV(ADIF);
     acquisitionActive = 0;
     TIMSK1 &= (uint8_t)~_BV(OCIE1B);
 }
@@ -558,9 +559,10 @@ static void adcAcquisitionStart()
     TIFR1 = _BV(OCF1B);
 
     /*
-     * Clear old ADC completion flag and enable ADC interrupt.
+     * Clear old ADC completion flag, enable Auto-Trigger (ADATE),
+     * and enable ADC interrupt (ADIE).
      */
-    ADCSRA |= _BV(ADIF) | _BV(ADIE);
+    ADCSRA |= _BV(ADIF) | _BV(ADATE) | _BV(ADIE);
 
     /*
      * Enable Timer1 COMPB interrupt to schedule subsequent slots.
@@ -676,10 +678,10 @@ ISR(ADC_vect)
     if (adcResultSlot >= ETS_SLOTS)
     {
         /*
-         * Stop ADC interrupt for this physical pulse.
+         * Stop ADC Auto-Trigger and interrupt for this physical pulse.
          */
-        ADCSRA &= (uint8_t)
-            ~_BV(ADIE);
+        ADCSRA &= (uint8_t)~( _BV(ADATE) | _BV(ADIE) );
+        ADCSRA |= _BV(ADIF);
 
         TIMSK1 &= (uint8_t)
             ~_BV(OCIE1B);
@@ -1225,15 +1227,11 @@ static void adcInit()
              (uint8_t)( _BV(ADTS2) | _BV(ADTS0) );
 
     /*
-     * Enable ADC and Auto Trigger (ADATE).
+     * Enable ADC. Auto Trigger (ADATE) and ADC interrupt (ADIE) remain disabled
+     * until an active acquisition window starts.
      */
-    ADCSRA |= _BV(ADEN) | _BV(ADATE);
-
-    /*
-     * ADC interrupt disabled until acquisition starts.
-     */
-    ADCSRA &= (uint8_t)
-        ~_BV(ADIE);
+    ADCSRA |= _BV(ADEN);
+    ADCSRA &= (uint8_t)~( _BV(ADATE) | _BV(ADIE) );
 
     /*
      * Dummy conversion to initialize ADC.
@@ -1246,9 +1244,10 @@ static void adcInit()
     }
 
     /*
-     * Clear ADC completion flag.
+     * Clear ADC completion flag and ensure ADATE/ADIE remain disabled in IDLE.
      */
     ADCSRA |= _BV(ADIF);
+    ADCSRA &= (uint8_t)~( _BV(ADATE) | _BV(ADIE) );
 }
 
 
@@ -1288,10 +1287,10 @@ static void detectorStart()
     noInterrupts();
 
     /*
-     * Stop any unfinished acquisition.
+     * Stop any unfinished acquisition and ensure ADATE/ADIE are disabled.
      */
-    ADCSRA &= (uint8_t)
-        ~_BV(ADIE);
+    ADCSRA &= (uint8_t)~( _BV(ADATE) | _BV(ADIE) );
+    ADCSRA |= _BV(ADIF);
 
     TIMSK1 &= (uint8_t)
         ~_BV(OCIE1B);
@@ -1377,10 +1376,10 @@ static void detectorStop()
         ~_BV(OCIE1B);
 
     /*
-     * Stop ADC interrupt.
+     * Stop ADC Auto-Trigger and interrupt.
      */
-    ADCSRA &= (uint8_t)
-        ~_BV(ADIE);
+    ADCSRA &= (uint8_t)~( _BV(ADATE) | _BV(ADIE) );
+    ADCSRA |= _BV(ADIF);
 
     acquisitionActive = 0;
 
