@@ -1732,6 +1732,100 @@ class FelezJooDspAndProtocolTest {
         assertEquals(5.0, parsedBlock!!.delayUs, 0.0001)
     }
 
+    /**
+     * Test 1: ASCII buffer single batch (5000 bytes) constraint check and binary packet recovery.
+     * - Send a single ASCII batch of 5000 bytes.
+     * - Verify rxBufferSize <= 512 after processing.
+     * - Verify peakRxBufferSize <= 512.
+     * - Send a valid Binary RAW_BLOCK packet afterwards.
+     * - Verify that the Binary packet is successfully parsed.
+     */
+    @Test
+    fun testAsciiBufferSingleBatch5000BytesAndBinaryRecovery() {
+        var parsedBlock: DecayBlock? = null
+        val parser = ProtocolParser(
+            onDecayBlockParsed = { parsedBlock = it },
+            onRawPacketRecord = {},
+            onAsciiLineParsed = {},
+            onSequenceGapDetected = { _, _ -> },
+            onCrcErrorDetected = { _, _ -> }
+        )
+
+        // 1. Send single ASCII batch of 5000 bytes
+        val asciiBatch = ByteArray(5000) { 'A'.code.toByte() }
+        asciiBatch[0] = '#'.code.toByte()
+        parser.processIncomingBytes(asciiBatch, asciiBatch.size)
+
+        // 2. Assert rxBufferSize <= 512 after processing
+        assertTrue(
+            "rxBufferSize (${parser.rxBufferSize}) must be <= 512 after processing 5000-byte ASCII batch",
+            parser.rxBufferSize <= 512
+        )
+
+        // 3. Assert peakRxBufferSize <= 512
+        assertTrue(
+            "peakRxBufferSize (${parser.peakRxBufferSize}) must be <= 512",
+            parser.peakRxBufferSize <= 512
+        )
+
+        // 4. Send valid Binary RAW_BLOCK packet afterwards
+        val samples = IntArray(70) { 500 }
+        val validBinaryPacket = PacketGenerator.createRawBlockPacket(
+            sequence = 701L,
+            timestamp = 7000L,
+            delayTicks = 10,
+            samples = samples,
+            flags = PacketConstants.FLAGS_ETS_PHASE_STEPPED
+        )
+        parser.processIncomingBytes(validBinaryPacket, validBinaryPacket.size)
+
+        // 5. Verify that the Binary packet was parsed successfully
+        assertNotNull("Binary RAW_BLOCK must be parsed successfully after 5000-byte ASCII burst", parsedBlock)
+        assertEquals(701L, parsedBlock!!.sequenceNumber)
+        assertEquals(70, parsedBlock!!.sampleCount)
+        assertTrue(parsedBlock!!.timeAxisValid)
+    }
+
+    /**
+     * Test 2: Verification of timing independence between sampleSpacingUs and delayUnitUs.
+     * Configuration:
+     * - sampleSpacingUs = 1.0 us
+     * - delayUnitUs = 0.5 us
+     * - delayTicks = 10
+     * Verification:
+     * - delayUs = 5.0 us (delayUs = delayTicks * delayUnitUs)
+     * - sampleSpacingUs = 1.0 us
+     */
+    @Test
+    fun testTimingIndependenceSampleSpacingVsDelayUnitExplicit() {
+        val config = SamplingConfiguration(
+            sampleSpacingUs = 1.0,
+            delayUnitUs = 0.5,
+            delayTicks = 10
+        )
+
+        val decayBlock = DecayBlock(
+            delayTicks = config.delayTicks,
+            sampleSpacingUs = config.sampleSpacingUs,
+            samplingConfiguration = config
+        )
+
+        // Verify delayUs = delayTicks * delayUnitUs = 10 * 0.5 = 5.0 us
+        assertEquals(5.0, config.delayUs, 0.0001)
+        assertEquals(5.0, decayBlock.delayUs, 0.0001)
+
+        // Verify sampleSpacingUs = 1.0 us is completely independent
+        assertEquals(1.0, config.sampleSpacingUs, 0.0001)
+        assertEquals(1.0, decayBlock.sampleSpacingUs, 0.0001)
+
+        // Verify delayUs = delayTicks * delayUnitUs and NOT delayTicks * sampleSpacingUs (which would be 10.0 us)
+        assertTrue(
+            "delayUs must equal delayTicks * delayUnitUs (5.0 us), not delayTicks * sampleSpacingUs (10.0 us)",
+            decayBlock.delayUs == decayBlock.delayTicks * config.delayUnitUs &&
+                decayBlock.delayUs != decayBlock.delayTicks * decayBlock.sampleSpacingUs
+        )
+    }
+
     /*
      * ============================================================
      * HARDWARE ACCEPTANCE TESTS SPECIFICATION (Requirement 8)
