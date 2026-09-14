@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.felezjoo.ui.components.TactileOutlinedButton
 import com.example.felezjoo.ui.components.TechnicalStatBadge
 import com.example.felezjoo.ui.components.WaveformGraph
 import com.example.felezjoo.viewmodel.FelezJooViewModel
@@ -101,26 +102,38 @@ fun SignalLabScreen(viewModel: FelezJooViewModel) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Button(
+            TactileOutlinedButton(
                 onClick = { viewModel.captureAirBaseline() },
-                colors = ButtonDefaults.buttonColors(containerColor = LabSurfaceVariant, contentColor = LabPrimary),
+                borderColor = LabPrimary.copy(alpha = 0.5f),
+                pressedBorderColor = LabPrimary,
+                accentColor = LabPrimary,
+                contentColor = LabPrimary,
+                pressedContentColor = Color.White,
                 modifier = Modifier.weight(1f).testTag("capture_baseline_button")
             ) {
-                Text("CAPTURE BASELINE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text("CAPTURE BASELINE", fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
-            Button(
+            TactileOutlinedButton(
                 onClick = { viewModel.captureGround() },
-                colors = ButtonDefaults.buttonColors(containerColor = LabSurfaceVariant, contentColor = LabTertiary),
+                borderColor = LabTertiary.copy(alpha = 0.5f),
+                pressedBorderColor = LabTertiary,
+                accentColor = LabTertiary,
+                contentColor = LabTertiary,
+                pressedContentColor = Color.White,
                 modifier = Modifier.weight(1f).testTag("capture_ground_button")
             ) {
-                Text("CAPTURE GROUND", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text("CAPTURE GROUND", fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
-            Button(
+            TactileOutlinedButton(
                 onClick = { viewModel.resetGround() },
-                colors = ButtonDefaults.buttonColors(containerColor = LabSurfaceVariant, contentColor = Color.White),
+                borderColor = LabBorder,
+                pressedBorderColor = Color.White,
+                accentColor = Color.White,
+                contentColor = Color.White,
+                pressedContentColor = Color.White,
                 modifier = Modifier.weight(1f).testTag("reset_ground_button")
             ) {
-                Text("RESET GROUND", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text("RESET GROUND", fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
         }
 

@@ -44,14 +44,18 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.felezjoo.ui.components.TactileButton
+import com.example.felezjoo.ui.components.TactileOutlinedButton
 import com.example.felezjoo.ui.components.TechnicalStatBadge
 import com.example.felezjoo.usb.UsbConnectionState
 import com.example.felezjoo.usb.UsbDriverDetector
 import com.example.felezjoo.viewmodel.FelezJooViewModel
 import com.example.ui.theme.LabBorder
 import com.example.ui.theme.LabError
+import com.example.ui.theme.LabErrorPressed
 import com.example.ui.theme.LabPrimary
 import com.example.ui.theme.LabSecondary
+import com.example.ui.theme.LabSecondaryPressed
 import com.example.ui.theme.LabSurface
 import com.example.ui.theme.LabSurfaceVariant
 import com.example.ui.theme.LabTertiary
@@ -107,9 +111,11 @@ fun UsbDeviceScreen(viewModel: FelezJooViewModel) {
                         else -> LabTertiary
                     })
 
-                    Button(
+                    TactileOutlinedButton(
                         onClick = { viewModel.refreshUsbDevices() },
-                        colors = ButtonDefaults.buttonColors(containerColor = LabSurfaceVariant, contentColor = Color.White),
+                        borderColor = LabBorder,
+                        pressedBorderColor = Color.White,
+                        contentColor = Color.White,
                         modifier = Modifier.height(32.dp).testTag("refresh_usb_button")
                     ) {
                         Text("REFRESH", fontSize = 10.sp, fontWeight = FontWeight.Bold)
@@ -234,21 +240,25 @@ fun UsbDeviceScreen(viewModel: FelezJooViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Button(
+                    TactileButton(
                         onClick = {
                             selectedDevice?.let { viewModel.connectUsb(it, selectedBaud) }
                         },
                         enabled = selectedDevice != null && !isConnected,
-                        colors = ButtonDefaults.buttonColors(containerColor = LabSecondary, contentColor = Color.Black),
+                        containerColor = LabSecondary,
+                        pressedColor = LabSecondaryPressed,
+                        contentColor = Color.Black,
                         modifier = Modifier.weight(1f).testTag("usb_connect_btn")
                     ) {
                         Text("OPEN PORT", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    Button(
+                    TactileButton(
                         onClick = { viewModel.disconnectUsb() },
                         enabled = isConnected,
-                        colors = ButtonDefaults.buttonColors(containerColor = LabError, contentColor = Color.White),
+                        containerColor = LabError,
+                        pressedColor = LabErrorPressed,
+                        contentColor = Color.White,
                         modifier = Modifier.weight(1f).testTag("usb_disconnect_btn")
                     ) {
                         Text("CLOSE PORT", fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -271,38 +281,42 @@ fun UsbDeviceScreen(viewModel: FelezJooViewModel) {
                 Spacer(modifier = Modifier.height(8.dp))
 
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(
+                    TactileOutlinedButton(
                         onClick = { viewModel.commandConsole.send("PING") },
                         modifier = Modifier.height(32.dp).testTag("cmd_ping")
                     ) {
                         Text("PING", fontSize = 10.sp)
                     }
-                    OutlinedButton(
+                    TactileOutlinedButton(
                         onClick = { viewModel.commandConsole.send("CONFIG?") },
                         modifier = Modifier.height(32.dp).testTag("cmd_config")
                     ) {
                         Text("CONFIG?", fontSize = 10.sp)
                     }
-                    OutlinedButton(
+                    TactileOutlinedButton(
                         onClick = { viewModel.commandConsole.send("STATUS") },
                         modifier = Modifier.height(32.dp).testTag("cmd_status")
                     ) {
                         Text("STATUS", fontSize = 10.sp)
                     }
-                    OutlinedButton(
+                    TactileOutlinedButton(
                         onClick = { viewModel.commandConsole.send("START") },
                         modifier = Modifier.height(32.dp).testTag("cmd_start")
                     ) {
                         Text("START", fontSize = 10.sp)
                     }
-                    OutlinedButton(
+                    TactileOutlinedButton(
                         onClick = { viewModel.commandConsole.send("STOP") },
                         modifier = Modifier.height(32.dp).testTag("cmd_stop")
                     ) {
                         Text("STOP", fontSize = 10.sp)
                     }
-                    OutlinedButton(
+                    TactileOutlinedButton(
                         onClick = { viewModel.commandConsole.send("RESET") },
+                        borderColor = LabError.copy(alpha = 0.5f),
+                        pressedBorderColor = LabError,
+                        accentColor = LabError,
+                        contentColor = LabError,
                         modifier = Modifier.height(32.dp).testTag("cmd_reset")
                     ) {
                         Text("RESET MCU", fontSize = 10.sp, color = LabError)

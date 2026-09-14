@@ -49,14 +49,20 @@ import com.example.felezjoo.models.DspProfile
 import com.example.felezjoo.models.TargetClassification
 import com.example.felezjoo.simulation.SimulationTargetType
 import com.example.felezjoo.ui.components.RollingHistoryGraph
+import com.example.felezjoo.ui.components.TactileButton
+import com.example.felezjoo.ui.components.TactileChip
+import com.example.felezjoo.ui.components.TactileOutlinedButton
 import com.example.felezjoo.ui.components.TargetStatusHeader
 import com.example.felezjoo.ui.components.TechnicalStatBadge
 import com.example.felezjoo.ui.components.WaveformGraph
 import com.example.felezjoo.viewmodel.FelezJooViewModel
 import com.example.ui.theme.LabBorder
 import com.example.ui.theme.LabError
+import com.example.ui.theme.LabErrorPressed
 import com.example.ui.theme.LabPrimary
+import com.example.ui.theme.LabPrimaryPressed
 import com.example.ui.theme.LabSecondary
+import com.example.ui.theme.LabSecondaryPressed
 import com.example.ui.theme.LabSurface
 import com.example.ui.theme.LabSurfaceVariant
 import com.example.ui.theme.LabTertiary
@@ -110,14 +116,14 @@ fun DashboardScreen(viewModel: FelezJooViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Stream Button
-                Button(
+                TactileButton(
                     onClick = {
                         if (isStreaming) viewModel.stopStreaming() else viewModel.startStreaming()
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isStreaming) LabError else LabSecondary,
-                        contentColor = Color.Black
-                    ),
+                    containerColor = if (isStreaming) LabError else LabSecondary,
+                    pressedColor = if (isStreaming) LabErrorPressed else LabSecondaryPressed,
+                    contentColor = Color.Black,
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.testTag("stream_toggle_button")
                 ) {
                     Icon(
@@ -220,13 +226,16 @@ fun DashboardScreen(viewModel: FelezJooViewModel) {
                     )
                 }
 
-                Button(
+                TactileOutlinedButton(
                     onClick = { viewModel.navigateTo(com.example.felezjoo.ui.Screen.DETECTOR_CONTROLS) },
-                    colors = ButtonDefaults.buttonColors(containerColor = LabPrimary.copy(alpha = 0.2f), contentColor = LabPrimary),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LabPrimary),
+                    borderColor = LabPrimary.copy(alpha = 0.5f),
+                    pressedBorderColor = LabPrimary,
+                    accentColor = LabPrimary,
+                    contentColor = LabPrimary,
+                    pressedContentColor = Color.White,
                     shape = RoundedCornerShape(6.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    modifier = Modifier.height(30.dp).testTag("dashboard_to_controls_btn")
+                    modifier = Modifier.height(32.dp).testTag("dashboard_to_controls_btn")
                 ) {
                     Text("CONTROLS & POLARITY ⚙", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
@@ -302,17 +311,12 @@ fun DashboardScreen(viewModel: FelezJooViewModel) {
                     Spacer(modifier = Modifier.height(6.dp))
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         SimulationTargetType.entries.forEach { targetType ->
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.simulationEngine.targetType = targetType
-                                },
-                                modifier = Modifier.height(30.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (viewModel.simulationEngine.targetType == targetType) LabPrimary else LabTextSecondary
-                                )
-                            ) {
-                                Text(targetType.displayName, fontSize = 10.sp)
-                            }
+                            TactileChip(
+                                selected = viewModel.simulationEngine.targetType == targetType,
+                                onClick = { viewModel.simulationEngine.targetType = targetType },
+                                label = targetType.displayName,
+                                activeColor = LabTertiary
+                            )
                         }
                     }
                 }

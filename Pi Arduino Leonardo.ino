@@ -498,20 +498,18 @@ static void adcStop()
 }
 
 /*
- * Desired Sample & Hold time in CPU cycles:
- * desiredSampleHoldTime = pulseWidth + delay + ETS phase offset
+ * Desired Sample & Hold time in CPU cycles from TX-off:
+ * desiredSampleHoldTime = delay + ETS phase offset
  *
- * pulseWidth: activePulseUs * 16 CPU cycles (1 us = 16 CPU cycles @ 16 MHz)
  * delay: activeDelayTicks in 1.6 us ticks (25.6 cycles / tick)
  * phase: (pulse + slot * ETS_PULSES) in 1.6 us ticks (25.6 cycles / tick)
  */
 static inline uint32_t calculateDesiredSampleHoldCycles(uint8_t pulse, uint8_t slot)
 {
-    uint32_t pulseCycles = (uint32_t)activePulseUs * 16UL;
     uint32_t delayCycles = ets_ticks_to_cpu_cycles(activeDelayTicks);
     uint16_t phaseTicks = (uint16_t)pulse + (uint16_t)slot * ETS_PULSES;
     uint32_t phaseCycles = ets_ticks_to_cpu_cycles(phaseTicks);
-    return pulseCycles + delayCycles + phaseCycles;
+    return delayCycles + phaseCycles;
 }
 
 /*

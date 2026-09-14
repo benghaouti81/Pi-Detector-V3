@@ -42,11 +42,16 @@ import com.example.felezjoo.audio.AudioMode
 import com.example.felezjoo.models.PolarityDetectionQuality
 import com.example.felezjoo.models.PolarityMode
 import com.example.felezjoo.models.WaveformPolarity
+import com.example.felezjoo.ui.components.TactileButton
+import com.example.felezjoo.ui.components.TactileChip
+import com.example.felezjoo.ui.components.TactileOutlinedButton
 import com.example.felezjoo.viewmodel.FelezJooViewModel
 import com.example.ui.theme.LabBorder
 import com.example.ui.theme.LabError
 import com.example.ui.theme.LabPrimary
+import com.example.ui.theme.LabPrimaryPressed
 import com.example.ui.theme.LabSecondary
+import com.example.ui.theme.LabSecondaryPressed
 import com.example.ui.theme.LabSurface
 import com.example.ui.theme.LabSurfaceVariant
 import com.example.ui.theme.LabTertiary
@@ -123,16 +128,19 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                Button(
+                TactileButton(
                     onClick = {
                         viewModel.setPulseRateHz(pulseRateHz)
                         viewModel.setPulseWidthUs(pulseWidthUs)
                         viewModel.setDelayTicks(delayTicks)
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = LabPrimary, contentColor = Color.Black),
+                    containerColor = LabPrimary,
+                    pressedColor = LabPrimaryPressed,
+                    contentColor = Color.Black,
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth().testTag("apply_detector_hardware_btn")
                 ) {
-                    Text("TRANSMIT HARDWARE CONFIGURATION", fontWeight = FontWeight.Bold)
+                    Text("TRANSMIT HARDWARE CONFIGURATION", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }
@@ -179,11 +187,12 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     PolarityMode.entries.forEach { mode ->
-                        FilterChip(
+                        TactileChip(
                             selected = samplingConfig.polarityMode == mode,
                             onClick = { viewModel.setPolarityMode(mode) },
-                            label = { Text(mode.displayName, fontSize = 11.sp) },
-                            modifier = Modifier.weight(1f).height(34.dp).testTag("polarity_mode_${mode.name.lowercase()}")
+                            label = mode.displayName,
+                            activeColor = LabPrimary,
+                            modifier = Modifier.weight(1f).testTag("polarity_mode_${mode.name.lowercase()}")
                         )
                     }
                 }
@@ -264,17 +273,22 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    OutlinedButton(
+                    TactileOutlinedButton(
                         onClick = { viewModel.runPolarityDetection() },
+                        borderColor = LabBorder,
+                        pressedBorderColor = LabPrimary,
+                        accentColor = LabPrimary,
                         modifier = Modifier.weight(1f).testTag("detect_polarity_btn")
                     ) {
-                        Text("DETECT POLARITY", fontSize = 11.sp)
+                        Text("DETECT POLARITY", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
 
-                    Button(
+                    TactileButton(
                         onClick = { viewModel.applyDetectedPolarity() },
                         enabled = polarityDetectionResult.detectedPolarity != null,
-                        colors = ButtonDefaults.buttonColors(containerColor = LabSecondary, contentColor = Color.Black),
+                        containerColor = LabSecondary,
+                        pressedColor = LabSecondaryPressed,
+                        contentColor = Color.Black,
                         modifier = Modifier.weight(1f).testTag("apply_detected_polarity_btn")
                     ) {
                         Text("APPLY DETECTED", fontSize = 11.sp, fontWeight = FontWeight.Bold)

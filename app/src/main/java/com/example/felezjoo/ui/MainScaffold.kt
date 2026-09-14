@@ -66,6 +66,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.felezjoo.ui.components.TactileIconButton
 import com.example.felezjoo.ui.screens.AlgorithmCompareScreen
 import com.example.felezjoo.ui.screens.CalibrationDiagnosticsScreen
 import com.example.felezjoo.ui.screens.CommandConsoleScreen
@@ -224,18 +225,23 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
                         }
                     },
                     navigationIcon = {
-                        IconButton(
+                        TactileIconButton(
                             onClick = { scope.launch { drawerState.open() } },
-                            modifier = Modifier.testTag("drawer_menu_button")
+                            modifier = Modifier.padding(start = 4.dp).testTag("drawer_menu_button"),
+                            tint = Color.White,
+                            pressedTint = LabPrimary
                         ) {
                             Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color.White)
                         }
                     },
                     actions = {
                         // Quick Controls (Polarity & Settings)
-                        IconButton(
+                        TactileIconButton(
                             onClick = { viewModel.navigateTo(Screen.DETECTOR_CONTROLS) },
-                            modifier = Modifier.size(36.dp).testTag("topbar_controls_btn")
+                            modifier = Modifier.testTag("topbar_controls_btn"),
+                            tint = if (currentScreen == Screen.DETECTOR_CONTROLS) LabSecondary else Color.White,
+                            pressedTint = LabSecondary,
+                            containerColor = if (currentScreen == Screen.DETECTOR_CONTROLS) LabSecondary.copy(alpha = 0.15f) else Color.Transparent
                         ) {
                             Icon(
                                 Icons.Default.Build,
@@ -245,9 +251,12 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
                         }
 
                         // Quick Mute Toggle
-                        IconButton(
+                        TactileIconButton(
                             onClick = { audioManager.isMuted = !audioManager.isMuted },
-                            modifier = Modifier.size(36.dp).testTag("quick_mute_btn")
+                            modifier = Modifier.testTag("quick_mute_btn"),
+                            tint = if (audioManager.isMuted) LabError else Color.White,
+                            pressedTint = LabError,
+                            containerColor = if (audioManager.isMuted) LabError.copy(alpha = 0.15f) else Color.Transparent
                         ) {
                             Icon(
                                 if (audioManager.isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
@@ -257,11 +266,14 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
                         }
 
                         // Stream Toggle Action in Top Bar
-                        IconButton(
+                        TactileIconButton(
                             onClick = {
                                 if (isStreaming) viewModel.stopStreaming() else viewModel.startStreaming()
                             },
-                            modifier = Modifier.size(36.dp).testTag("topbar_stream_toggle")
+                            modifier = Modifier.padding(end = 4.dp).testTag("topbar_stream_toggle"),
+                            tint = if (isStreaming) LabError else LabSecondary,
+                            pressedTint = if (isStreaming) LabError else LabSecondary,
+                            containerColor = (if (isStreaming) LabError else LabSecondary).copy(alpha = 0.15f)
                         ) {
                             Icon(
                                 if (isStreaming) Icons.Default.Stop else Icons.Default.PlayArrow,
