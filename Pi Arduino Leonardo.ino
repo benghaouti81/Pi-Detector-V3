@@ -856,9 +856,20 @@ static bool isConfigurationValid(
 
     /*
      * Verify inter-pulse off-time fits total acquisition window.
+     * Maximum Sample & Hold timing relative to TX pulse start:
+     *   maxAcqTimeUs = pulseUs + delayUs + maxPhaseUs + adcMarginUs
+     * where:
+     *   - pulseUs: TX pulse width in microseconds
+     *   - delayUs: delayTicks * 1.6 us (16/10)
+     *   - maxPhaseUs: pulse 13, slot 4 -> 69 phase ticks * 1.6 us = 110.4 us (~111 us)
+     *   - 15 us margin: ADC conversion completion (13 ADC clocks @ 1 MHz) + ISR overhead
      */
     uint32_t offTimeUs = (periodTicks - pulseTicks) / 2UL;
-    uint32_t maxAcqTimeUs = ((uint32_t)delayTicks * 16UL) / 10UL + 111UL + 15UL;
+    uint32_t maxAcqTimeUs =
+        (uint32_t)pulseUs +
+        (((uint32_t)delayTicks * 16UL) / 10UL) +
+        111UL +
+        15UL;
     if (maxAcqTimeUs >= offTimeUs)
         return false;
 
