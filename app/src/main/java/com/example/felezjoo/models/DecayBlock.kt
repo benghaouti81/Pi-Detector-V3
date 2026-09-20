@@ -37,7 +37,7 @@ data class DecayBlock(
     val isSaturated: Boolean
         get() {
             val maxVal = samplingConfiguration.maxAdcValue
-            return rawSamples.any { it >= maxVal - 2 || it <= 2 }
+            return rawSamples.any { it >= maxVal - 2 }
         }
 
     /**

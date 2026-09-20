@@ -39,7 +39,9 @@ data class DspCalculationResult(
     val groundFreezeReason: String = "",
     val postUpdateGroundCurve: DoubleArray = groundCurve,
     val polarityDetectionResult: PolarityDetectionResult = PolarityDetectionResult.UNKNOWN,
-    val effectivePolarity: WaveformPolarity = block.polarity
+    val effectivePolarity: WaveformPolarity = block.polarity,
+    val rawChronologicalCurve: DoubleArray = DoubleArray(0),
+    val airCompensatedCurve: DoubleArray = DoubleArray(0)
 )
 
 /**
@@ -530,7 +532,9 @@ class DspPipeline {
             groundFreezeReason = groundAdaptationStatus.freezeReason,
             postUpdateGroundCurve = finalGroundSnapshot,
             polarityDetectionResult = polarityDetection,
-            effectivePolarity = effectivePolarity
+            effectivePolarity = effectivePolarity,
+            rawChronologicalCurve = rawDouble,
+            airCompensatedCurve = airCompensated
         )
     }
 
@@ -653,7 +657,7 @@ class DspPipeline {
             confidence < profile.confidenceThreshold -> TargetClassification.POSSIBLE_TARGET
             ironScore >= profile.ironRejectThreshold -> TargetClassification.FERROUS_LIKELY
             ironScore <= 35.0 && confidence >= profile.confidenceThreshold -> TargetClassification.NON_FERROUS_LIKELY
-            score >= profile.targetThreshold && confidence >= profile.confidenceThreshold -> TargetClassification.POSSIBLE_TARGET
+            score >= profile.targetThreshold && confidence >= profile.confidenceThreshold -> TargetClassification.STABLE_TARGET
             else -> TargetClassification.UNKNOWN
         }
     }

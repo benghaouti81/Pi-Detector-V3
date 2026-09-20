@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Arduino Leonardo (CDC-ACM Serial) VID 0x2341 (9025), PID 0x8036 (32822) -->
+    <usb-device vendor-id="9025" product-id="32822" />
+    <!-- Arduino Leonardo Bootloader VID 0x2341 (9025), PID 0x0036 (54) -->
+    <usb-device vendor-id="9025" product-id="54" />
+</resources>

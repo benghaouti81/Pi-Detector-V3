@@ -57,10 +57,9 @@ fun FieldModeScreen(viewModel: FelezJooViewModel) {
     val classification = dspResult?.targetClassification ?: TargetClassification.NO_TARGET
 
     val classColor = when (classification) {
-        TargetClassification.STABLE_TARGET -> LabSecondary
-        TargetClassification.IRON -> LabError
+        TargetClassification.FERROUS_LIKELY, TargetClassification.IRON -> LabError
+        TargetClassification.NON_FERROUS_LIKELY, TargetClassification.NON_FERROUS, TargetClassification.STABLE_TARGET -> LabPrimary
         TargetClassification.POSSIBLE_TARGET -> LabTertiary
-        TargetClassification.NON_FERROUS -> LabPrimary
         TargetClassification.NO_TARGET -> Color.Gray
         else -> LabTertiary
     }

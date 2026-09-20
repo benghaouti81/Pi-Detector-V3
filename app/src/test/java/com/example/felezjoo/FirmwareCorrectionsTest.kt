@@ -14,86 +14,95 @@ import org.junit.Test
 class FirmwareCorrectionsTest {
 
     // =========================================================================
-    // ISSUE 1: Timing Model Verification (Pulse Width Units in ADC Timing)
+    // ISSUE 1: Timing Model Verification (ETS Decay Acquisition from TX-OFF Zero)
     // =========================================================================
+    // ATmega32U4 Auto Trigger hardware delay: 2 ADC clocks + 3 CPU cycles = 35 cycles
+    // TCNT1 is reset to 0 at TX-OFF (TIMER3_COMPB), so desired S&H is measured from TX-OFF.
+    private val ADC_TRIGGER_TO_SH_CYCLES = 35L
 
     private fun etsTicksToCpuCycles(ticks: Long): Long =
         (ticks * 128L + 2L) / 5L
 
     private fun calculateDesiredSampleHoldCycles(
-        activePulseUs: Int,
         activeDelayTicks: Int,
         pulse: Int,
         slot: Int
     ): Long {
-        val pulseCycles = activePulseUs.toLong() * 16L
         val delayCycles = etsTicksToCpuCycles(activeDelayTicks.toLong())
         val phaseTicks = pulse.toLong() + slot.toLong() * 14L
         val phaseCycles = etsTicksToCpuCycles(phaseTicks)
-        return pulseCycles + delayCycles + phaseCycles
+        return delayCycles + phaseCycles
     }
 
     @Test
     fun testIssue1_pulse150_delay10_slot0_sampleHoldTiming() {
-        val activePulseUs = 150
         val activeDelayTicks = 10
         val pulse = 0
         val slot = 0
 
-        val desiredSH = calculateDesiredSampleHoldCycles(activePulseUs, activeDelayTicks, pulse, slot)
-        val pulseCycles = 150L * 16L // 2400 cycles = 150 us
+        val desiredSH = calculateDesiredSampleHoldCycles(activeDelayTicks, pulse, slot)
         val delayCycles = etsTicksToCpuCycles(10L) // (1280 + 2) / 5 = 256 cycles = 16.0 us
-        val expectedCycles = pulseCycles + delayCycles // 2656 cycles
+        val expectedCycles = delayCycles // 256 cycles from TX-OFF
 
-        assertEquals(2656L, desiredSH)
+        assertEquals(256L, desiredSH)
         assertEquals(expectedCycles, desiredSH)
 
-        val timeUs = desiredSH / 16.0
-        assertEquals(166.0, timeUs, 0.001) // 150 us + 16 us = 166 us
+        val timeFromTxOffUs = desiredSH / 16.0
+        assertEquals(16.0, timeFromTxOffUs, 0.001) // 16.0 us from TX-OFF
 
-        // Hardware Compare Match B compensation: OCR1B = desiredSH - 24
-        val ocr1b = desiredSH - 24L
-        assertEquals(2632L, ocr1b)
+        // Hardware Compare Match B compensation with ATmega32U4 35-cycle trigger-to-S&H:
+        // OCR1B = desiredSH - 35
+        val ocr1b = desiredSH - ADC_TRIGGER_TO_SH_CYCLES
+        assertEquals(221L, ocr1b)
     }
 
     @Test
     fun testIssue1_pulse150_delay10_slot1_sampleHoldTiming() {
-        val activePulseUs = 150
         val activeDelayTicks = 10
         val pulse = 0
         val slot = 1
 
-        val desiredSH = calculateDesiredSampleHoldCycles(activePulseUs, activeDelayTicks, pulse, slot)
-        val pulseCycles = 150L * 16L // 2400 cycles = 150 us
+        val desiredSH = calculateDesiredSampleHoldCycles(activeDelayTicks, pulse, slot)
         val delayCycles = etsTicksToCpuCycles(10L) // 256 cycles = 16.0 us
         val phaseTicks = 14L
         val phaseCycles = etsTicksToCpuCycles(phaseTicks) // (14 * 128 + 2) / 5 = 358 cycles = 22.375 us (~22.4 us)
 
-        assertEquals(2400L + 256L + 358L, desiredSH)
-        assertEquals(3014L, desiredSH)
+        assertEquals(256L + 358L, desiredSH)
+        assertEquals(614L, desiredSH)
 
-        val timeUs = desiredSH / 16.0
-        assertEquals(150.0 + 16.0 + (358.0 / 16.0), timeUs, 0.001) // 150 us + 16 us + 22.375 us
-        assertEquals(188.375, timeUs, 0.001)
+        val timeFromTxOffUs = desiredSH / 16.0
+        assertEquals(16.0 + (358.0 / 16.0), timeFromTxOffUs, 0.001) // 16.0 us + 22.375 us = 38.375 us
+        assertEquals(38.375, timeFromTxOffUs, 0.001)
+
+        val ocr1b = desiredSH - ADC_TRIGGER_TO_SH_CYCLES
+        assertEquals(614L - 35L, ocr1b)
+        assertEquals(579L, ocr1b)
     }
 
     @Test
-    fun testIssue1_pulseWidthLinearScaling() {
-        val testPulses = intArrayOf(100, 150, 200, 250)
-        val delayTicks = 10
-        val slot = 0
-        val pulse = 0
+    fun testIssue1_lastPhysicalSampleTiming() {
+        // Last physical sample: pulse = 13, slot = 4
+        val activeDelayTicks = 10
+        val pulse = 13
+        val slot = 4
 
-        val cycles = testPulses.map { p ->
-            calculateDesiredSampleHoldCycles(p, delayTicks, pulse, slot)
-        }
+        val phaseTicks = pulse.toLong() + slot.toLong() * 14L // 13 + 56 = 69 ticks
+        assertEquals(69L, phaseTicks)
 
-        // Each 50 us increment must add exactly 50 * 16 = 800 CPU cycles
-        for (i in 0 until cycles.size - 1) {
-            val deltaCycles = cycles[i + 1] - cycles[i]
-            val deltaPulseUs = testPulses[i + 1] - testPulses[i]
-            assertEquals((deltaPulseUs * 16).toLong(), deltaCycles)
-        }
+        val phaseCycles = etsTicksToCpuCycles(phaseTicks) // (69 * 128 + 2) / 5 = 1766 cycles
+        assertEquals(1766L, phaseCycles)
+
+        val desiredSH = calculateDesiredSampleHoldCycles(activeDelayTicks, pulse, slot)
+        assertEquals(256L + 1766L, desiredSH) // 2022 cycles
+
+        val timeFromTxOffUs = desiredSH / 16.0
+        // 2022 / 16 = 126.375 us from TX-OFF
+        assertEquals(126.375, timeFromTxOffUs, 0.001)
+
+        // Verify OCR1B register value under 35-cycle model
+        val ocr1b = desiredSH - ADC_TRIGGER_TO_SH_CYCLES
+        assertEquals(2022L - 35L, ocr1b)
+        assertEquals(1987L, ocr1b)
     }
 
     // =========================================================================

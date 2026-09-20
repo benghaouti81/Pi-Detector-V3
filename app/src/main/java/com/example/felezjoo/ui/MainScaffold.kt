@@ -106,6 +106,7 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
     val usbState by viewModel.usbState.collectAsState()
     val isSimulation by viewModel.isSimulationMode.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
+    val isDeveloperMode by viewModel.isDeveloperMode.collectAsState()
     val audioManager = viewModel.audioManager
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -143,15 +144,25 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text("FELEZJOO PI LAB", fontWeight = FontWeight.Black, fontSize = 15.sp, color = Color.White)
-                            Text("PULSE INDUCTION DSP 2.0", fontSize = 10.sp, color = LabPrimary, fontFamily = FontFamily.Monospace)
+                            Text(
+                                if (isDeveloperMode) "DEV MODE • FULL ACCESS" else "USER MODE • FIELD SAFE",
+                                fontSize = 10.sp,
+                                color = if (isDeveloperMode) LabTertiary else LabSecondary,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
 
                     HorizontalDivider(color = LabBorder, thickness = 1.dp)
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // Grouped Navigation Items
-                    val categories = listOf("Detection", "Settings", "Research", "Hardware", "Diagnostics", "Data", "Info")
+                    // Grouped Navigation Items (filtered by User vs Developer Mode)
+                    val categories = if (isDeveloperMode) {
+                        listOf("Detection", "Settings", "Research", "Hardware", "Diagnostics", "Data", "Info")
+                    } else {
+                        listOf("Detection", "Settings", "Data", "Info")
+                    }
                     categories.forEach { cat ->
                         Text(
                             cat.uppercase(),

@@ -46,12 +46,15 @@ import com.example.felezjoo.usb.UsbDriverDetector
 import com.example.felezjoo.usb.UsbStatistics
 import com.example.felezjoo.usb.UsbTransport
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.example.felezjoo.models.HardwareBoardProfile
+import com.example.felezjoo.models.OperationalPreset
 
 class FelezJooViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -65,6 +68,103 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     fun navigateTo(screen: Screen) {
         _currentScreen.value = screen
+    }
+
+    // Role Mode: Developer vs User
+    private val _isDeveloperMode = MutableStateFlow(false) // Safe user mode by default
+    val isDeveloperMode: StateFlow<Boolean> = _isDeveloperMode.asStateFlow()
+
+    fun setDeveloperMode(enabled: Boolean) {
+        _isDeveloperMode.value = enabled
+        if (!enabled && _isSimulationMode.value) {
+            setSimulationMode(false)
+        }
+    }
+
+    // Hardware Board Profiles (Manual selection only - no auto-detect per firmware specs)
+    private val _activeHardwareProfile = MutableStateFlow(HardwareBoardProfile.LEONARDO_DEFAULT)
+    val activeHardwareProfile: StateFlow<HardwareBoardProfile> = _activeHardwareProfile.asStateFlow()
+
+    private val _availableHardwareProfiles = MutableStateFlow(HardwareBoardProfile.BUILT_IN_PROFILES)
+    val availableHardwareProfiles: StateFlow<List<HardwareBoardProfile>> = _availableHardwareProfiles.asStateFlow()
+
+    fun selectHardwareProfile(profile: HardwareBoardProfile) {
+        _activeHardwareProfile.value = profile
+        // Resend / clamp active parameters within selected profile boundaries
+        val currentBlockVal = _currentBlock.value
+        setPulseRateHz(currentBlockVal.pulseRate)
+        setPulseWidthUs(currentBlockVal.pulseWidthUs)
+        setDelayTicks(_samplingConfig.value.delayTicks)
+        SystemDiagnostics.info("Hardware", "Selected hardware profile: ${profile.name}")
+    }
+
+    fun setHardwareBoardProfile(profile: HardwareBoardProfile) = selectHardwareProfile(profile)
+
+    // Operational Presets (Functional combinations: Fast Scan, Deep Search, Iron Discrimination)
+    private val _availablePresets = MutableStateFlow(OperationalPreset.PRESETS)
+    val availablePresets: StateFlow<List<OperationalPreset>> = _availablePresets.asStateFlow()
+
+    private val _activePreset = MutableStateFlow(OperationalPreset.FAST_SCAN)
+    val activePreset: StateFlow<OperationalPreset> = _activePreset.asStateFlow()
+
+    fun applyOperationalPreset(preset: OperationalPreset) {
+        _activePreset.value = preset
+        val profile = _activeHardwareProfile.value
+        val safeFreq = profile.clampFrequency(preset.frequencyHz)
+        val safePulse = profile.clampPulse(preset.pulseWidthUs)
+        val safeDelay = profile.clampDelay(preset.delayTicks)
+
+        setPulseRateHz(safeFreq)
+        setPulseWidthUs(safePulse)
+        setDelayTicks(safeDelay)
+        SystemDiagnostics.info("Preset", "Applied preset '${preset.nameEn}' (Freq=$safeFreq, Pulse=$safePulse, Delay=$safeDelay)")
+    }
+
+    // User Mode Simplified Sensitivity (1..10) mapping to DSP thresholds
+    private val _simplifiedSensitivity = MutableStateFlow(5)
+    val simplifiedSensitivity: StateFlow<Int> = _simplifiedSensitivity.asStateFlow()
+
+    fun setSimplifiedSensitivity(level: Int) {
+        val clamped = level.coerceIn(1, 10)
+        _simplifiedSensitivity.value = clamped
+        val targetThresh = (63.5 - clamped * 3.5).coerceIn(25.0, 60.0)
+        val confThresh = (69.5 - clamped * 4.5).coerceIn(20.0, 65.0)
+        updateProfile(_activeProfile.value.copy(
+            targetThreshold = targetThresh,
+            confidenceThreshold = confThresh
+        ))
+    }
+
+    // Guided 2-Step Air/Ground Calibration for User Mode
+    private val _guidedCalibrationStep = MutableStateFlow(1) // 1: Air prompt, 2: Ground prompt, 3: Completed
+    val guidedCalibrationStep: StateFlow<Int> = _guidedCalibrationStep.asStateFlow()
+
+    private val _guidedCalibrationMessage = MutableStateFlow("الخطوة 1: ارفع ملف الكاشف في الهواء بعيدًا عن أي معدن، ثم اضغط 'التقاط الهواء'")
+    val guidedCalibrationMessage: StateFlow<String> = _guidedCalibrationMessage.asStateFlow()
+
+    fun startGuidedCalibration() {
+        _guidedCalibrationStep.value = 1
+        _guidedCalibrationMessage.value = "الخطوة 1: ارفع ملف الكاشف في الهواء بعيدًا عن أي معدن، ثم اضغط 'التقاط الهواء'"
+    }
+
+    fun executeGuidedStep1Air() {
+        captureAirBaseline()
+        _guidedCalibrationStep.value = 2
+        _guidedCalibrationMessage.value = "الخطوة 2: ضع ملف الكاشف قرب سطح التربة المراد البحث فيها، ثم اضغط 'التقاط الأرض'"
+    }
+
+    fun executeGuidedStep2Ground() {
+        captureGround()
+        _guidedCalibrationStep.value = 3
+        _guidedCalibrationMessage.value = "تمت المعايرة بنجاح! تم حفظ خط الأساس الهوائي ونموذج التربة."
+    }
+
+    fun captureGuidedAir() = executeGuidedStep1Air()
+    fun captureGuidedGround() = executeGuidedStep2Ground()
+
+    fun resetGuidedCalibration() {
+        _guidedCalibrationStep.value = 1
+        _guidedCalibrationMessage.value = "الخطوة 1: ارفع ملف الكاشف في الهواء بعيدًا عن أي معدن، ثم اضغط 'التقاط الهواء'"
     }
 
     // Hardware & Device State
@@ -88,6 +188,9 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     val audioManager = DetectorAudioManager(context, viewModelScope)
     val replayEngine = ReplayEngine(viewModelScope) { onBlockReceived(it) }
 
+    // Single-consumer sequential frame channel to prevent parallel race conditions
+    private val incomingBlockChannel = Channel<DecayBlock>(Channel.BUFFERED)
+
     private val _usbState = MutableStateFlow(UsbConnectionState.DISCONNECTED)
     val usbState: StateFlow<UsbConnectionState> = _usbState.asStateFlow()
 
@@ -102,10 +205,29 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     val usbStats = UsbStatistics()
 
-    // Simulation Subsystem
+    // Simulation Subsystem (Locked to developer mode, defaults to false)
     lateinit var simulationEngine: SimulationEngine
-    private val _isSimulationMode = MutableStateFlow(true) // Defaults to true for instant out-of-the-box demo
+    private val _isSimulationMode = MutableStateFlow(false) // Default to false
     val isSimulationMode: StateFlow<Boolean> = _isSimulationMode.asStateFlow()
+
+    fun setSimulationMode(enabled: Boolean) {
+        if (enabled && !_isDeveloperMode.value) {
+            SystemDiagnostics.warn("Simulation", "Simulation mode cannot be activated outside Developer Mode")
+            return
+        }
+        _isSimulationMode.value = enabled
+        if (enabled) {
+            simulationEngine.start()
+            SystemDiagnostics.info("Simulation", "Simulation engine started")
+        } else {
+            simulationEngine.stop()
+            SystemDiagnostics.info("Simulation", "Simulation engine stopped")
+        }
+    }
+
+    fun toggleSimulationMode() {
+        setSimulationMode(!_isSimulationMode.value)
+    }
 
     // Streaming & Recording
     private val _isStreaming = MutableStateFlow(false)
@@ -238,6 +360,13 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     }
 
     init {
+        // Single-consumer sequential processor for incoming decay blocks to eliminate race conditions
+        viewModelScope.launch(Dispatchers.Default) {
+            for (block in incomingBlockChannel) {
+                processBlockSequentially(block)
+            }
+        }
+
         commandConsole = CommandConsoleManager(viewModelScope) { cmd ->
             if (_isSimulationMode.value) {
                 handleSimulationCommand(cmd)
@@ -407,92 +536,96 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun onBlockReceived(block: DecayBlock) {
-        viewModelScope.launch(Dispatchers.Default) {
-            val startMs = System.currentTimeMillis()
-            // Ensure block inherits user's active sampling configuration (including polarity & polarityMode)
-            val activeCfg = _samplingConfig.value
-            val effectiveBlock = if (block.samplingConfiguration.polarity != activeCfg.polarity ||
-                block.samplingConfiguration.polarityMode != activeCfg.polarityMode) {
-                block.copy(
-                    samplingConfiguration = block.samplingConfiguration.copy(
-                        polarity = activeCfg.polarity,
-                        polarityMode = activeCfg.polarityMode
-                    ),
+        incomingBlockChannel.trySend(block)
+    }
+
+    private suspend fun processBlockSequentially(block: DecayBlock) {
+        val startMs = System.currentTimeMillis()
+        // Ensure block inherits user's active sampling configuration (including polarity & polarityMode)
+        val activeCfg = _samplingConfig.value
+        val effectiveBlock = if (block.samplingConfiguration.polarity != activeCfg.polarity ||
+            block.samplingConfiguration.polarityMode != activeCfg.polarityMode) {
+            block.copy(
+                samplingConfiguration = block.samplingConfiguration.copy(
                     polarity = activeCfg.polarity,
                     polarityMode = activeCfg.polarityMode
-                )
-            } else {
-                block
-            }
-            _currentBlock.value = effectiveBlock
-
-            // Run DSP Pipeline
-            val result = dspPipeline.processBlock(effectiveBlock, _activeProfile.value)
-            val dspDuration = System.currentTimeMillis() - startMs
-            SystemDiagnostics.lastDspDurationMs = dspDuration
-
-            _dspResult.value = result
-            if (result.polarityDetectionResult.quality != PolarityDetectionQuality.NONE) {
-                _polarityDetectionResult.value = result.polarityDetectionResult
-            }
-
-            // Update rolling history
-            val currentScores = _historyScores.value.toMutableList()
-            val currentSnr = _historySnr.value.toMutableList()
-            val currentNoise = _historyNoise.value.toMutableList()
-
-            currentScores.add(result.featureVector.targetScore)
-            currentSnr.add(result.featureVector.snr)
-            currentNoise.add(result.featureVector.noise)
-
-            if (currentScores.size > 64) currentScores.removeAt(0)
-            if (currentSnr.size > 64) currentSnr.removeAt(0)
-            if (currentNoise.size > 64) currentNoise.removeAt(0)
-
-            _historyScores.value = currentScores
-            _historySnr.value = currentSnr
-            _historyNoise.value = currentNoise
-
-            // Update Non-blocking Audio
-            audioManager.updateTargetState(
-                targetScore = result.featureVector.targetScore,
-                confidence = result.featureVector.targetConfidence,
-                ironScore = result.featureVector.ironScore,
-                targetId = result.featureVector.targetId,
-                classification = result.targetClassification
+                ),
+                polarity = activeCfg.polarity,
+                polarityMode = activeCfg.polarityMode
             )
+        } else {
+            block
+        }
+        _currentBlock.value = effectiveBlock
 
-            // Track target events if stable target detected
-            if (result.targetClassification == TargetClassification.STABLE_TARGET ||
-                result.targetClassification == TargetClassification.NON_FERROUS ||
-                result.targetClassification == TargetClassification.IRON
-            ) {
-                if (result.featureVector.targetScore > 50.0 && result.featureVector.targetConfidence > 50.0) {
-                    recordTargetEvent(result)
-                }
+        // Run DSP Pipeline
+        val result = dspPipeline.processBlock(effectiveBlock, _activeProfile.value)
+        val dspDuration = System.currentTimeMillis() - startMs
+        SystemDiagnostics.lastDspDurationMs = dspDuration
+
+        _dspResult.value = result
+        if (result.polarityDetectionResult.quality != PolarityDetectionQuality.NONE) {
+            _polarityDetectionResult.value = result.polarityDetectionResult
+        }
+
+        // Update rolling history
+        val currentScores = _historyScores.value.toMutableList()
+        val currentSnr = _historySnr.value.toMutableList()
+        val currentNoise = _historyNoise.value.toMutableList()
+
+        currentScores.add(result.featureVector.targetScore)
+        currentSnr.add(result.featureVector.snr)
+        currentNoise.add(result.featureVector.noise)
+
+        if (currentScores.size > 64) currentScores.removeAt(0)
+        if (currentSnr.size > 64) currentSnr.removeAt(0)
+        if (currentNoise.size > 64) currentNoise.removeAt(0)
+
+        _historyScores.value = currentScores
+        _historySnr.value = currentSnr
+        _historyNoise.value = currentNoise
+
+        // Update Non-blocking Audio
+        audioManager.updateTargetState(
+            targetScore = result.featureVector.targetScore,
+            confidence = result.featureVector.targetConfidence,
+            ironScore = result.featureVector.ironScore,
+            targetId = result.featureVector.targetId,
+            classification = result.targetClassification
+        )
+
+        // Track target events if valid target detected (aligned with actual classifications)
+        if (result.targetClassification == TargetClassification.FERROUS_LIKELY ||
+            result.targetClassification == TargetClassification.NON_FERROUS_LIKELY ||
+            result.targetClassification == TargetClassification.STABLE_TARGET ||
+            result.targetClassification == TargetClassification.NON_FERROUS ||
+            result.targetClassification == TargetClassification.IRON
+        ) {
+            if (result.featureVector.targetScore > 50.0 && result.featureVector.targetConfidence > 50.0) {
+                recordTargetEvent(result)
             }
+        }
 
-            // Save to database if recording
-            if (_isRecording.value) {
-                val session = _activeSession.value
-                if (session != null) {
-                    val entity = DecayBlockEntity(
-                        sessionId = session.id,
-                        sequenceNumber = block.sequenceNumber,
-                        timestamp = block.timestamp,
-                        delayTicks = block.delayTicks,
-                        delayUs = block.delayUs,
-                        pulseRate = block.pulseRate,
-                        pulseWidthUs = block.pulseWidthUs,
-                        rawSamplesCsv = block.rawSamples.joinToString(","),
-                        targetScore = result.featureVector.targetScore,
-                        confidence = result.featureVector.targetConfidence,
-                        ironScore = result.featureVector.ironScore,
-                        targetId = result.featureVector.targetId,
-                        classification = result.targetClassification.name
-                    )
-                    database.decayBlockDao().insertBlock(entity)
-                }
+        // Save to database if recording
+        if (_isRecording.value) {
+            val session = _activeSession.value
+            if (session != null) {
+                val entity = DecayBlockEntity(
+                    sessionId = session.id,
+                    sequenceNumber = block.sequenceNumber,
+                    timestamp = block.timestamp,
+                    delayTicks = block.delayTicks,
+                    delayUs = block.delayUs,
+                    pulseRate = block.pulseRate,
+                    pulseWidthUs = block.pulseWidthUs,
+                    rawSamplesCsv = block.rawSamples.joinToString(","),
+                    targetScore = result.featureVector.targetScore,
+                    confidence = result.featureVector.targetConfidence,
+                    ironScore = result.featureVector.ironScore,
+                    targetId = result.featureVector.targetId,
+                    classification = result.targetClassification.name
+                )
+                database.decayBlockDao().insertBlock(entity)
             }
         }
     }
@@ -552,11 +685,7 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setDelayTicks(ticks: Int) {
-        // Physical limits: 4 * 1.6 us = 6.4 us to 50 * 1.6 us = 80.0 us
-        val safeTicks = ticks.coerceIn(
-            SamplingConfiguration.MIN_DELAY_TICKS,
-            SamplingConfiguration.MAX_DELAY_TICKS
-        )
+        val safeTicks = _activeHardwareProfile.value.clampDelay(ticks)
         _samplingConfig.value = _samplingConfig.value.copy(
             delayTicks = safeTicks
         )
@@ -566,21 +695,24 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setPulseWidthUs(widthUs: Int) {
+        val safeWidth = _activeHardwareProfile.value.clampPulse(widthUs)
         if (!_isSimulationMode.value) {
-            commandConsole.send("SET:PULSE=$widthUs")
+            commandConsole.send("SET:PULSE=$safeWidth")
         }
     }
 
     fun setPulseRateHz(freqHz: Int) {
+        val safeFreq = _activeHardwareProfile.value.clampFrequency(freqHz)
         if (!_isSimulationMode.value) {
-            commandConsole.send("SET:FREQ=$freqHz")
+            commandConsole.send("SET:FREQ=$safeFreq")
         }
     }
 
     fun captureAirBaseline() {
         val res = _dspResult.value ?: return
-        dspPipeline.captureAirBaseline(res.filteredCurve)
-        SystemDiagnostics.info("DSP", "Captured air baseline")
+        val samples = if (res.rawChronologicalCurve.isNotEmpty()) res.rawChronologicalCurve else res.filteredCurve
+        dspPipeline.captureAirBaseline(samples)
+        SystemDiagnostics.info("DSP", "Captured air baseline from raw chronological curve")
     }
 
     fun captureGround() {
@@ -590,11 +722,12 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
                 _groundCaptureProgress.value = p
                 delay(80L)
             }
-            dspPipeline.setGroundDirect(res.filteredCurve)
+            val groundSamples = if (res.airCompensatedCurve.isNotEmpty()) res.airCompensatedCurve else res.filteredCurve
+            dspPipeline.setGroundDirect(groundSamples)
             _groundCaptureProgress.value = 100
             delay(200L)
             _groundCaptureProgress.value = 0
-            SystemDiagnostics.info("DSP", "Ground captured successfully")
+            SystemDiagnostics.info("DSP", "Ground captured successfully from raw air-compensated residual")
         }
     }
 
@@ -611,7 +744,11 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     fun applyAutoDelay() {
         val candidate = _autoDelayResult.value ?: return
-        setDelayTicks(candidate.first)
+        val currentDelay = _samplingConfig.value.delayTicks
+        val recommendedDelay = currentDelay + candidate.first
+        val clampedDelay = _activeHardwareProfile.value.clampDelay(recommendedDelay)
+        setDelayTicks(clampedDelay)
+        SystemDiagnostics.info("DSP", "Applied auto delay: current=$currentDelay + offset=${candidate.first} -> $clampedDelay ticks")
     }
 
     // Polarity Mode & Detection Controls
