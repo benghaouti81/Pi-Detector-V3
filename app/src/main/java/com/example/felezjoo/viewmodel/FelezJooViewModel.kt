@@ -410,17 +410,18 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
             }
         }
 
-        // Register USB broadcast receiver safely
+        // Register USB broadcast receiver safely with ContextCompat for Android Lint & Android 14+ compliance
         val filter = IntentFilter().apply {
             addAction(ACTION_USB_PERMISSION)
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            context.registerReceiver(usbReceiver, filter)
-        }
+        androidx.core.content.ContextCompat.registerReceiver(
+            context,
+            usbReceiver,
+            filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         refreshUsbDevices()
 
