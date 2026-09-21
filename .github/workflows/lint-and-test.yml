@@ -33,8 +33,16 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Ensure gradlew exists and has execute permissions
+        run: |
+          if [ ! -f gradlew ]; then
+            echo "gradlew not found in repository checkout, generating wrapper..."
+            gradle wrapper
+          fi
+          chmod +x gradlew
+
       - name: Run Lint
-        run: gradle lint
+        run: ./gradlew lint
 
   test:
     name: Unit Tests
@@ -62,8 +70,16 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Ensure gradlew exists and has execute permissions
+        run: |
+          if [ ! -f gradlew ]; then
+            echo "gradlew not found in repository checkout, generating wrapper..."
+            gradle wrapper
+          fi
+          chmod +x gradlew
+
       - name: Run Unit Tests
-        run: gradle test
+        run: ./gradlew test
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v4
