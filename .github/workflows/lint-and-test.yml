@@ -21,6 +21,13 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Create dummy .env file for secrets plugin
+        run: |
+          touch .env
+          if [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -42,6 +49,13 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+
+      - name: Create dummy .env file for secrets plugin
+        run: |
+          touch .env
+          if [ -f .env.example ]; then
+            cp .env.example .env
+          fi
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
