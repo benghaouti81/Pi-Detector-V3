@@ -55,12 +55,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.example.felezjoo.models.HardwareBoardProfile
 import com.example.felezjoo.models.OperationalPreset
+import com.example.felezjoo.storage.ProfileExportPackage
+import com.example.felezjoo.storage.ProfileJsonSerializer
+import com.example.felezjoo.storage.SettingsPreferencesManager
 
 class FelezJooViewModel(application: Application) : AndroidViewModel(application) {
 
     private val context: Context get() = getApplication()
     val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     val database = AppDatabase.getInstance(context)
+    val preferencesManager = SettingsPreferencesManager(context)
 
     // Current Navigation Screen
     private val _currentScreen = MutableStateFlow(Screen.DASHBOARD)
@@ -71,26 +75,27 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     }
 
     // Role Mode: Developer vs User
-    private val _isDeveloperMode = MutableStateFlow(false) // Safe user mode by default
+    private val _isDeveloperMode = MutableStateFlow(preferencesManager.getDeveloperMode(false))
     val isDeveloperMode: StateFlow<Boolean> = _isDeveloperMode.asStateFlow()
 
     fun setDeveloperMode(enabled: Boolean) {
         _isDeveloperMode.value = enabled
+        preferencesManager.saveDeveloperMode(enabled)
         if (!enabled && _isSimulationMode.value) {
             setSimulationMode(false)
         }
     }
 
-    // Hardware Board Profiles (Manual selection only - no auto-detect per firmware specs)
+    // Hardware Board Profiles
+    private val _availableHardwareProfiles = MutableStateFlow<List<HardwareBoardProfile>>(emptyList())
+    val availableHardwareProfiles: StateFlow<List<HardwareBoardProfile>> = _availableHardwareProfiles.asStateFlow()
+
     private val _activeHardwareProfile = MutableStateFlow(HardwareBoardProfile.LEONARDO_DEFAULT)
     val activeHardwareProfile: StateFlow<HardwareBoardProfile> = _activeHardwareProfile.asStateFlow()
 
-    private val _availableHardwareProfiles = MutableStateFlow(HardwareBoardProfile.BUILT_IN_PROFILES)
-    val availableHardwareProfiles: StateFlow<List<HardwareBoardProfile>> = _availableHardwareProfiles.asStateFlow()
-
     fun selectHardwareProfile(profile: HardwareBoardProfile) {
         _activeHardwareProfile.value = profile
-        // Resend / clamp active parameters within selected profile boundaries
+        preferencesManager.saveHardwareProfileId(profile.id)
         val currentBlockVal = _currentBlock.value
         setPulseRateHz(currentBlockVal.pulseRate)
         setPulseWidthUs(currentBlockVal.pulseWidthUs)
@@ -100,7 +105,26 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     fun setHardwareBoardProfile(profile: HardwareBoardProfile) = selectHardwareProfile(profile)
 
-    // Operational Presets (Functional combinations: Fast Scan, Deep Search, Iron Discrimination)
+    fun addNewHardwareProfile(profile: HardwareBoardProfile) {
+        val current = _availableHardwareProfiles.value.toMutableList()
+        current.removeAll { it.id == profile.id }
+        current.add(profile)
+        _availableHardwareProfiles.value = current
+        preferencesManager.saveCustomHardwareProfiles(current)
+        selectHardwareProfile(profile)
+    }
+
+    fun deleteCustomHardwareProfile(profileId: String) {
+        val current = _availableHardwareProfiles.value.toMutableList()
+        current.removeAll { it.id == profileId && it.isUserEditable }
+        _availableHardwareProfiles.value = current
+        preferencesManager.saveCustomHardwareProfiles(current)
+        if (_activeHardwareProfile.value.id == profileId) {
+            selectHardwareProfile(HardwareBoardProfile.LEONARDO_DEFAULT)
+        }
+    }
+
+    // Operational Presets
     private val _availablePresets = MutableStateFlow(OperationalPreset.PRESETS)
     val availablePresets: StateFlow<List<OperationalPreset>> = _availablePresets.asStateFlow()
 
@@ -109,6 +133,7 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     fun applyOperationalPreset(preset: OperationalPreset) {
         _activePreset.value = preset
+        preferencesManager.saveOperationalPresetId(preset.id)
         val profile = _activeHardwareProfile.value
         val safeFreq = profile.clampFrequency(preset.frequencyHz)
         val safePulse = profile.clampPulse(preset.pulseWidthUs)
@@ -121,12 +146,13 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     }
 
     // User Mode Simplified Sensitivity (1..10) mapping to DSP thresholds
-    private val _simplifiedSensitivity = MutableStateFlow(5)
+    private val _simplifiedSensitivity = MutableStateFlow(preferencesManager.getSensitivity(5))
     val simplifiedSensitivity: StateFlow<Int> = _simplifiedSensitivity.asStateFlow()
 
     fun setSimplifiedSensitivity(level: Int) {
         val clamped = level.coerceIn(1, 10)
         _simplifiedSensitivity.value = clamped
+        preferencesManager.saveSensitivity(clamped)
         val targetThresh = (63.5 - clamped * 3.5).coerceIn(25.0, 60.0)
         val confThresh = (69.5 - clamped * 4.5).coerceIn(20.0, 65.0)
         updateProfile(_activeProfile.value.copy(
@@ -398,8 +424,64 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
         refreshUsbDevices()
 
+        // Load and initialize persisted settings and custom hardware profiles
+        loadInitialPersistedSettings()
+
         // Generate initial demo block so Signal Lab immediately shows realistic waveform
         generateDemoDecayBlock()
+    }
+
+    private fun loadInitialPersistedSettings() {
+        try {
+            // Load custom hardware boards
+            val customHardware = preferencesManager.loadCustomHardwareProfiles()
+            val allBoards = HardwareBoardProfile.BUILT_IN_PROFILES + customHardware
+            _availableHardwareProfiles.value = allBoards
+
+            val savedBoardId = preferencesManager.getHardwareProfileId("leonardo_atmega32u4")
+            val matchingBoard = allBoards.find { it.id == savedBoardId } ?: HardwareBoardProfile.LEONARDO_DEFAULT
+            _activeHardwareProfile.value = matchingBoard
+
+            // Load saved pulse & delay timings
+            val savedRate = matchingBoard.clampFrequency(preferencesManager.getPulseRate(200))
+            val savedPulse = matchingBoard.clampPulse(preferencesManager.getPulseWidth(150))
+            val savedDelay = matchingBoard.clampDelay(preferencesManager.getDelayTicks(10))
+
+            _currentBlock.value = _currentBlock.value.copy(
+                pulseRate = savedRate,
+                pulseWidthUs = savedPulse,
+                delayTicks = savedDelay
+            )
+            _samplingConfig.value = _samplingConfig.value.copy(
+                delayTicks = savedDelay,
+                polarity = preferencesManager.getWaveformPolarity(),
+                polarityMode = preferencesManager.getPolarityMode()
+            )
+
+            // Load DSP profile & thresholds
+            val savedDspId = preferencesManager.getDspProfileId("profile_stable")
+            val baseDsp = DspProfile.BUILT_IN_PROFILES.find { it.id == savedDspId } ?: DspProfile.STABLE
+            val restoredDsp = baseDsp.copy(
+                targetThreshold = preferencesManager.getTargetThreshold(baseDsp.targetThreshold.toFloat()).toDouble(),
+                confidenceThreshold = preferencesManager.getConfidenceThreshold(baseDsp.confidenceThreshold.toFloat()).toDouble(),
+                ironRejectThreshold = preferencesManager.getIronRejectThreshold(baseDsp.ironRejectThreshold.toFloat()).toDouble(),
+                audioThreshold = preferencesManager.getAudioThreshold(baseDsp.audioThreshold.toFloat()).toDouble()
+            )
+            _activeProfile.value = restoredDsp
+
+            // Load Audio settings
+            audioManager.audioThreshold = restoredDsp.audioThreshold
+            audioManager.mode = preferencesManager.getAudioMode()
+            audioManager.isMuted = preferencesManager.getAudioMuted()
+            audioManager.hapticEnabled = preferencesManager.getHapticEnabled()
+
+            // Load operational preset
+            val savedPresetId = preferencesManager.getOperationalPresetId("fast_scan")
+            val matchingPreset = OperationalPreset.PRESETS.find { it.id == savedPresetId } ?: OperationalPreset.FAST_SCAN
+            _activePreset.value = matchingPreset
+        } catch (e: Exception) {
+            SystemDiagnostics.error("Settings", "Failed restoring saved settings: ${e.message}")
+        }
     }
 
     fun refreshUsbDevices() {
@@ -677,6 +759,12 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     fun updateProfile(newProfile: DspProfile) {
         _activeProfile.value = newProfile
         audioManager.audioThreshold = newProfile.audioThreshold
+        preferencesManager.saveDspProfileId(newProfile.id)
+        preferencesManager.saveDspThresholds(
+            newProfile.targetThreshold,
+            newProfile.confidenceThreshold,
+            newProfile.ironRejectThreshold
+        )
         _dspResult.value?.let { currentRes ->
             // Re-evaluate immediately with new profile
             val updated = dspPipeline.processBlock(currentRes.block, newProfile)
@@ -686,6 +774,7 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     fun setDelayTicks(ticks: Int) {
         val safeTicks = _activeHardwareProfile.value.clampDelay(ticks)
+        preferencesManager.saveDelayTicks(safeTicks)
         _samplingConfig.value = _samplingConfig.value.copy(
             delayTicks = safeTicks
         )
@@ -696,6 +785,8 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     fun setPulseWidthUs(widthUs: Int) {
         val safeWidth = _activeHardwareProfile.value.clampPulse(widthUs)
+        preferencesManager.savePulseWidth(safeWidth)
+        _currentBlock.value = _currentBlock.value.copy(pulseWidthUs = safeWidth)
         if (!_isSimulationMode.value) {
             commandConsole.send("SET:PULSE=$safeWidth")
         }
@@ -703,6 +794,8 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     fun setPulseRateHz(freqHz: Int) {
         val safeFreq = _activeHardwareProfile.value.clampFrequency(freqHz)
+        preferencesManager.savePulseRate(safeFreq)
+        _currentBlock.value = _currentBlock.value.copy(pulseRate = safeFreq)
         if (!_isSimulationMode.value) {
             commandConsole.send("SET:FREQ=$safeFreq")
         }
@@ -763,6 +856,7 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
         )
         _samplingConfig.value = updatedConfig
         protocolParser.updateSamplingConfig(updatedConfig)
+        preferencesManager.savePolarityConfig(updatedConfig.polarity, mode)
         SystemDiagnostics.info("DSP", "Polarity mode set to ${mode.displayName}")
 
         // Immediately re-process current block with updated config
@@ -904,6 +998,89 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
             samplingConfiguration = config
         )
         onBlockReceived(block)
+    }
+
+    // Export, Import & Share System for Configurations and Profiles
+    fun exportCurrentProfileJson(name: String = "My Detector Setup", description: String = ""): String {
+        val blk = _currentBlock.value
+        val dsp = _activeProfile.value
+        val cfg = _samplingConfig.value
+        val pkg = ProfileExportPackage(
+            profileName = name,
+            description = description,
+            exportTimestamp = System.currentTimeMillis(),
+            pulseRateHz = blk.pulseRate,
+            pulseWidthUs = blk.pulseWidthUs,
+            delayTicks = cfg.delayTicks,
+            sensitivity = _simplifiedSensitivity.value,
+            targetThreshold = dsp.targetThreshold,
+            confidenceThreshold = dsp.confidenceThreshold,
+            ironRejectThreshold = dsp.ironRejectThreshold,
+            audioThreshold = audioManager.audioThreshold,
+            polarity = cfg.polarity.name,
+            polarityMode = cfg.polarityMode.name,
+            hardwareProfileId = _activeHardwareProfile.value.id,
+            operationalPresetId = _activePreset.value.id
+        )
+        return ProfileJsonSerializer.serialize(pkg)
+    }
+
+    fun importProfileJson(jsonContent: String): Boolean {
+        return try {
+            val pkg = ProfileJsonSerializer.deserialize(jsonContent)
+            // Restore hardware board if available
+            val matchingBoard = _availableHardwareProfiles.value.find { it.id == pkg.hardwareProfileId }
+            if (matchingBoard != null) {
+                selectHardwareProfile(matchingBoard)
+            }
+
+            // Restore timing
+            setPulseRateHz(pkg.pulseRateHz)
+            setPulseWidthUs(pkg.pulseWidthUs)
+            setDelayTicks(pkg.delayTicks)
+            setSimplifiedSensitivity(pkg.sensitivity)
+
+            // Restore polarity
+            val pol = try { WaveformPolarity.valueOf(pkg.polarity) } catch (e: Exception) { WaveformPolarity.POSITIVE }
+            val mode = try { PolarityMode.valueOf(pkg.polarityMode) } catch (e: Exception) { PolarityMode.AUTO }
+            setPolarityMode(mode)
+            if (mode != PolarityMode.AUTO) {
+                setWaveformPolarity(pol)
+            }
+
+            // Restore DSP thresholds
+            val currentDsp = _activeProfile.value
+            val updatedDsp = currentDsp.copy(
+                targetThreshold = pkg.targetThreshold,
+                confidenceThreshold = pkg.confidenceThreshold,
+                ironRejectThreshold = pkg.ironRejectThreshold,
+                audioThreshold = pkg.audioThreshold
+            )
+            updateProfile(updatedDsp)
+            audioManager.audioThreshold = pkg.audioThreshold
+
+            SystemDiagnostics.info("Profile", "Successfully imported profile: ${pkg.profileName}")
+            true
+        } catch (e: Exception) {
+            SystemDiagnostics.error("Profile", "Failed importing profile: ${e.message}")
+            false
+        }
+    }
+
+    fun exportHardwareProfileJson(profile: HardwareBoardProfile): String {
+        return ProfileJsonSerializer.serializeHardwareProfile(profile)
+    }
+
+    fun importHardwareProfileJson(jsonContent: String): Boolean {
+        return try {
+            val profile = ProfileJsonSerializer.deserializeHardwareProfile(jsonContent)
+            addNewHardwareProfile(profile)
+            SystemDiagnostics.info("Hardware", "Imported custom hardware profile: ${profile.name}")
+            true
+        } catch (e: Exception) {
+            SystemDiagnostics.error("Hardware", "Failed importing hardware profile: ${e.message}")
+            false
+        }
     }
 
     override fun onCleared() {

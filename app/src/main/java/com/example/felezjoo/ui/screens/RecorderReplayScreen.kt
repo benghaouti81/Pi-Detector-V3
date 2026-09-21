@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
@@ -302,7 +303,7 @@ fun RecorderReplayScreen(viewModel: FelezJooViewModel) {
                                             Text("LOAD REPLAY", fontSize = 9.sp)
                                         }
 
-                                        // Export CSV
+                                        // Export CSV (Copy)
                                         IconButton(
                                             onClick = {
                                                 scope.launch(Dispatchers.IO) {
@@ -317,6 +318,29 @@ fun RecorderReplayScreen(viewModel: FelezJooViewModel) {
                                             modifier = Modifier.size(30.dp)
                                         ) {
                                             Icon(Icons.Default.FileDownload, contentDescription = "Export CSV", tint = LabPrimary)
+                                        }
+
+                                        // Share Session Data
+                                        IconButton(
+                                            onClick = {
+                                                scope.launch(Dispatchers.IO) {
+                                                    val blocks = viewModel.database.decayBlockDao().getBlocksForSession(s.id)
+                                                    val csv = DataExportHelper.generateCsv(blocks)
+                                                    withContext(Dispatchers.Main) {
+                                                        val sendIntent = android.content.Intent().apply {
+                                                            action = android.content.Intent.ACTION_SEND
+                                                            putExtra(android.content.Intent.EXTRA_TEXT, csv)
+                                                            putExtra(android.content.Intent.EXTRA_SUBJECT, "FelezJoo PI - ${s.name} Data")
+                                                            type = "text/plain"
+                                                        }
+                                                        val chooser = android.content.Intent.createChooser(sendIntent, "Share Session Data")
+                                                        context.startActivity(chooser)
+                                                    }
+                                                }
+                                            },
+                                            modifier = Modifier.size(30.dp)
+                                        ) {
+                                            Icon(Icons.Default.Share, contentDescription = "Share Session", tint = LabSecondary)
                                         }
                                     }
                                 }

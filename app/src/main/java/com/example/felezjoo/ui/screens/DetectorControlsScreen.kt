@@ -49,7 +49,26 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import com.example.felezjoo.audio.AudioMode
+import com.example.felezjoo.storage.ProfileJsonSerializer
 import com.example.felezjoo.models.HardwareBoardProfile
 import com.example.felezjoo.models.OperationalPreset
 import com.example.felezjoo.models.PolarityDetectionQuality
@@ -100,6 +119,30 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
     var ironRejectThreshold by remember { mutableFloatStateOf(activeProfile.ironRejectThreshold.toFloat()) }
     var audioThreshold by remember { mutableFloatStateOf(audioManager.audioThreshold.toFloat()) }
     var hapticState by remember { mutableStateOf(audioManager.hapticEnabled) }
+
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+
+    // Dialog States for Profile & Hardware import/export
+    var showExportProfileDialog by remember { mutableStateOf(false) }
+    var showImportProfileDialog by remember { mutableStateOf(false) }
+    var showAddHardwareDialog by remember { mutableStateOf(false) }
+
+    var exportProfileName by remember { mutableStateOf("Setup ${System.currentTimeMillis() % 1000}") }
+    var exportProfileDescription by remember { mutableStateOf("Custom detector configuration") }
+    var importJsonText by remember { mutableStateOf("") }
+
+    // New Hardware Dialog fields
+    var newBoardName by remember { mutableStateOf("") }
+    var newBoardMcu by remember { mutableStateOf("ESP32-S3 @ 240MHz") }
+    var newBoardFreqMhz by remember { mutableStateOf("240") }
+    var newBoardMinFreq by remember { mutableStateOf("30") }
+    var newBoardMaxFreq by remember { mutableStateOf("800") }
+    var newBoardMinPulse by remember { mutableStateOf("20") }
+    var newBoardMaxPulse by remember { mutableStateOf("350") }
+    var newBoardMinDelay by remember { mutableStateOf("2") }
+    var newBoardMaxDelay by remember { mutableStateOf("100") }
+    var newBoardNotes by remember { mutableStateOf("Custom user hardware board") }
 
     LaunchedEffect(currentBlock) {
         pulseRateHz = currentBlock.pulseRate
@@ -157,6 +200,69 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
                     ),
                     modifier = Modifier.testTag("developer_mode_switch")
                 )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Profile Management, Save, Export, Import & Share System
+        Surface(
+            color = LabSurface,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, LabSecondary),
+            modifier = Modifier.fillMaxWidth().testTag("profile_export_import_card")
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Save, contentDescription = null, tint = LabSecondary, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("PROFILE & HARDWARE PRESETS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabSecondary)
+                    }
+                    Text("Auto-Saved", fontSize = 10.sp, color = LabTextSecondary, fontFamily = FontFamily.Monospace)
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Save current timing, pulse widths & sensitivity, export as JSON, or share with colleagues via Bluetooth/Chat.",
+                    fontSize = 11.sp,
+                    color = LabTextSecondary
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Export & Share Button
+                    TactileButton(
+                        onClick = { showExportProfileDialog = true },
+                        containerColor = LabSecondary,
+                        modifier = Modifier.weight(1f).height(38.dp).testTag("export_profile_btn")
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("EXPORT / SHARE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // Import Button
+                    TactileOutlinedButton(
+                        onClick = {
+                            importJsonText = ""
+                            showImportProfileDialog = true
+                        },
+                        accentColor = LabPrimary,
+                        modifier = Modifier.weight(1f).height(38.dp).testTag("import_profile_btn")
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("IMPORT PROFILE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
 
@@ -230,6 +336,43 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
                             fontFamily = FontFamily.Monospace,
                             color = LabTextSecondary
                         )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Custom Hardware Add / Export Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    TactileButton(
+                        onClick = {
+                            newBoardName = "Custom Board ${availableHardwareProfiles.size + 1}"
+                            showAddHardwareDialog = true
+                        },
+                        containerColor = LabTertiary,
+                        modifier = Modifier.weight(1f).height(32.dp).testTag("add_custom_hardware_btn")
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("+ ADD NEW BOARD", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    if (activeHardwareProfile.isUserEditable) {
+                        TactileOutlinedButton(
+                            onClick = {
+                                viewModel.deleteCustomHardwareProfile(activeHardwareProfile.id)
+                                Toast.makeText(context, "Deleted board profile", Toast.LENGTH_SHORT).show()
+                            },
+                            accentColor = LabError,
+                            borderColor = LabError,
+                            modifier = Modifier.weight(1f).height(32.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp), tint = LabError)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("DELETE BOARD", fontSize = 10.sp, color = LabError)
+                        }
                     }
                 }
             }
@@ -787,6 +930,248 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
                     )
                 }
             }
+        }
+
+        // ==========================================
+        // DIALOG: EXPORT & SHARE PROFILE
+        // ==========================================
+        if (showExportProfileDialog) {
+            val jsonPayload = viewModel.exportCurrentProfileJson(exportProfileName, exportProfileDescription)
+
+            AlertDialog(
+                onDismissRequest = { showExportProfileDialog = false },
+                containerColor = LabSurface,
+                title = {
+                    Text("Export & Share Profile", color = LabSecondary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                },
+                text = {
+                    Column {
+                        Text("Give your profile setup a recognizable name:", fontSize = 12.sp, color = LabTextSecondary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = exportProfileName,
+                            onValueChange = { exportProfileName = it },
+                            label = { Text("Profile Name") },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = TextStyle(color = Color.White, fontSize = 12.sp),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = exportProfileDescription,
+                            onValueChange = { exportProfileDescription = it },
+                            label = { Text("Description") },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = TextStyle(color = Color.White, fontSize = 12.sp),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("Current parameters: ${currentBlock.pulseRate} Hz, ${currentBlock.pulseWidthUs} µs, ${samplingConfig.delayTicks} ticks delay", fontSize = 10.sp, color = LabPrimary)
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            ProfileJsonSerializer.shareText(
+                                context = context,
+                                title = "FelezJoo Profile: $exportProfileName",
+                                textContent = jsonPayload
+                            )
+                            showExportProfileDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = LabSecondary, contentColor = Color.Black)
+                    ) {
+                        Text("SHARE / SEND")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(jsonPayload))
+                            Toast.makeText(context, "Profile JSON copied to clipboard", Toast.LENGTH_SHORT).show()
+                            showExportProfileDialog = false
+                        }
+                    ) {
+                        Text("COPY JSON", color = LabPrimary)
+                    }
+                }
+            )
+        }
+
+        // ==========================================
+        // DIALOG: IMPORT PROFILE
+        // ==========================================
+        if (showImportProfileDialog) {
+            AlertDialog(
+                onDismissRequest = { showImportProfileDialog = false },
+                containerColor = LabSurface,
+                title = {
+                    Text("Import Profile JSON", color = LabPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                },
+                text = {
+                    Column {
+                        Text("Paste the shared profile JSON code below to restore settings:", fontSize = 12.sp, color = LabTextSecondary)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = importJsonText,
+                            onValueChange = { importJsonText = it },
+                            placeholder = { Text("{\"profileName\": ... }", color = LabTextMuted) },
+                            modifier = Modifier.fillMaxWidth().height(140.dp),
+                            textStyle = TextStyle(color = Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                            maxLines = 8
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (importJsonText.isNotBlank()) {
+                                val success = viewModel.importProfileJson(importJsonText)
+                                if (success) {
+                                    Toast.makeText(context, "Profile imported & applied!", Toast.LENGTH_LONG).show()
+                                    showImportProfileDialog = false
+                                } else {
+                                    Toast.makeText(context, "Invalid profile format!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = LabPrimary, contentColor = Color.Black)
+                    ) {
+                        Text("APPLY PROFILE")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { showImportProfileDialog = false }) {
+                        Text("CANCEL", color = LabTextSecondary)
+                    }
+                }
+            )
+        }
+
+        // ==========================================
+        // DIALOG: ADD NEW HARDWARE BOARD
+        // ==========================================
+        if (showAddHardwareDialog) {
+            AlertDialog(
+                onDismissRequest = { showAddHardwareDialog = false },
+                containerColor = LabSurface,
+                title = {
+                    Text("Add Custom Board Profile", color = LabTertiary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                },
+                text = {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        Text("Define safety parameters for custom MCU/DSP hardware:", fontSize = 11.sp, color = LabTextSecondary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = newBoardName,
+                            onValueChange = { newBoardName = it },
+                            label = { Text("Board Name") },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = TextStyle(color = Color.White, fontSize = 12.sp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = newBoardMcu,
+                            onValueChange = { newBoardMcu = it },
+                            label = { Text("MCU Architecture") },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = TextStyle(color = Color.White, fontSize = 12.sp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            OutlinedTextField(
+                                value = newBoardMinFreq,
+                                onValueChange = { newBoardMinFreq = it },
+                                label = { Text("Min Hz") },
+                                modifier = Modifier.weight(1f),
+                                textStyle = TextStyle(color = Color.White, fontSize = 11.sp)
+                            )
+                            OutlinedTextField(
+                                value = newBoardMaxFreq,
+                                onValueChange = { newBoardMaxFreq = it },
+                                label = { Text("Max Hz") },
+                                modifier = Modifier.weight(1f),
+                                textStyle = TextStyle(color = Color.White, fontSize = 11.sp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            OutlinedTextField(
+                                value = newBoardMinPulse,
+                                onValueChange = { newBoardMinPulse = it },
+                                label = { Text("Min Pulse (µs)") },
+                                modifier = Modifier.weight(1f),
+                                textStyle = TextStyle(color = Color.White, fontSize = 11.sp)
+                            )
+                            OutlinedTextField(
+                                value = newBoardMaxPulse,
+                                onValueChange = { newBoardMaxPulse = it },
+                                label = { Text("Max Pulse (µs)") },
+                                modifier = Modifier.weight(1f),
+                                textStyle = TextStyle(color = Color.White, fontSize = 11.sp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            OutlinedTextField(
+                                value = newBoardMinDelay,
+                                onValueChange = { newBoardMinDelay = it },
+                                label = { Text("Min Delay") },
+                                modifier = Modifier.weight(1f),
+                                textStyle = TextStyle(color = Color.White, fontSize = 11.sp)
+                            )
+                            OutlinedTextField(
+                                value = newBoardMaxDelay,
+                                onValueChange = { newBoardMaxDelay = it },
+                                label = { Text("Max Delay") },
+                                modifier = Modifier.weight(1f),
+                                textStyle = TextStyle(color = Color.White, fontSize = 11.sp)
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (newBoardName.isNotBlank()) {
+                                val boardId = "board_${System.currentTimeMillis() % 100000}"
+                                val newBoard = HardwareBoardProfile(
+                                    id = boardId,
+                                    name = newBoardName,
+                                    mcu = newBoardMcu,
+                                    clockFrequencyMhz = newBoardFreqMhz.toIntOrNull() ?: 16,
+                                    minFrequencyHz = newBoardMinFreq.toIntOrNull() ?: 30,
+                                    maxFrequencyHz = newBoardMaxFreq.toIntOrNull() ?: 800,
+                                    minPulseUs = newBoardMinPulse.toIntOrNull() ?: 20,
+                                    maxPulseUs = newBoardMaxPulse.toIntOrNull() ?: 350,
+                                    minDelayTicks = newBoardMinDelay.toIntOrNull() ?: 2,
+                                    maxDelayTicks = newBoardMaxDelay.toIntOrNull() ?: 100,
+                                    delayUnitUs = 1.0,
+                                    sampleSpacingUs = 1.0,
+                                    nominalAdcResolutionBits = 12,
+                                    effectiveAdcResolutionBits = 10.5,
+                                    adcInputVoltageRange = "0V - 3.3V",
+                                    digitalTxOutputLevel = "3.3V / 5V",
+                                    sampleCount = 70,
+                                    notes = newBoardNotes,
+                                    isUserEditable = true
+                                )
+                                viewModel.addNewHardwareProfile(newBoard)
+                                Toast.makeText(context, "Added hardware profile ${newBoard.name}", Toast.LENGTH_SHORT).show()
+                                showAddHardwareDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = LabTertiary, contentColor = Color.Black)
+                    ) {
+                        Text("SAVE BOARD")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { showAddHardwareDialog = false }) {
+                        Text("CANCEL", color = LabTextSecondary)
+                    }
+                }
+            )
         }
     }
 }
