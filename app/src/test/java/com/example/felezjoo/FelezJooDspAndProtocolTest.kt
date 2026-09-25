@@ -23,6 +23,7 @@ import com.example.felezjoo.protocol.ProtocolParser
 import com.example.felezjoo.protocol.RawPacketRecord
 import com.example.felezjoo.simulation.SimulationEngine
 import com.example.felezjoo.simulation.SimulationTargetType
+import com.example.felezjoo.ui.components.calculateRawAutoScale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
@@ -2086,6 +2087,65 @@ class FelezJooDspAndProtocolTest {
         assertEquals(999L, parsedBlock!!.sequenceNumber)
         assertEquals("1.0", parsedBlock!!.protocolVersion)
         assertEquals(12, parsedBlock!!.delayTicks)
+    }
+
+    @Test
+    fun testOscilloscopeAutoScale_matchesSpecificationExample() {
+        // Specifications example:
+        // min = 785, max = 812
+        // do NOT display 0..1024
+        // Instead display window around signal: 782..815
+        val samples = intArrayOf(812, 810, 805, 800, 795, 790, 785)
+        val range = calculateRawAutoScale(samples)
+
+        assertEquals("displayMin must be 782.0", 782.0, range.minY, 0.001)
+        assertEquals("displayMax must be 815.0", 815.0, range.maxY, 0.001)
+    }
+
+    @Test
+    fun testOscilloscopeAutoScale_preservesOriginalRawSamples() {
+        // Principle: RAW samples must remain untouched physically.
+        val samples = intArrayOf(812, 810, 807, 804, 802)
+        val originalCopy = samples.clone()
+
+        calculateRawAutoScale(samples)
+
+        // Ensure array was not modified or mutated in place
+        for (i in samples.indices) {
+            assertEquals("Sample $i must remain unmodified raw ADC value", originalCopy[i], samples[i])
+        }
+    }
+
+    @Test
+    fun testOscilloscopeAutoScale_flatSignalSafeRange() {
+        // If signal is flat (all samples identical, range = 0)
+        val samples = intArrayOf(800, 800, 800, 800)
+        val range = calculateRawAutoScale(samples)
+
+        assertTrue("minY must be less than maxY", range.minY < range.maxY)
+        assertTrue("Safe range must be at least 10 ADC units", range.maxY - range.minY >= 10.0)
+        assertTrue("Signal must be contained within range", 800.0 >= range.minY && 800.0 <= range.maxY)
+    }
+
+    @Test
+    fun testOscilloscopeAutoScale_clampingToAdcLimits() {
+        // Near lower limit 0
+        val nearZero = intArrayOf(2, 5, 10, 15)
+        val rangeZero = calculateRawAutoScale(nearZero)
+        assertTrue("displayMin must be clamped to >= 0", rangeZero.minY >= 0.0)
+
+        // Near upper limit 1024
+        val nearMax = intArrayOf(1010, 1015, 1020, 1023)
+        val rangeMax = calculateRawAutoScale(nearMax)
+        assertTrue("displayMax must be clamped to <= 1024", rangeMax.maxY <= 1024.0)
+    }
+
+    @Test
+    fun testOscilloscopeAutoScale_emptySamplesSafeFallback() {
+        val empty = intArrayOf()
+        val range = calculateRawAutoScale(empty)
+        assertEquals(0.0, range.minY, 0.001)
+        assertEquals(1024.0, range.maxY, 0.001)
     }
 
     /*

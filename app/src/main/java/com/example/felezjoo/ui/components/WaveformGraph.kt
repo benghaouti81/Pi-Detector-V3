@@ -92,6 +92,7 @@ fun WaveformGraph(
     normalizedResidualCurve: DoubleArray = residualCurve
 ) {
     var showRaw by remember { mutableStateOf(true) }
+    var autoScale by remember { mutableStateOf(true) }
     var showFiltered by remember { mutableStateOf(true) }
     var showBaseline by remember { mutableStateOf(false) }
     var showGround by remember { mutableStateOf(true) }
@@ -128,6 +129,7 @@ fun WaveformGraph(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 CurveToggleChip("RAW", WaveRaw, showRaw) { showRaw = it }
+                CurveToggleChip("AUTO SCALE", Color(0xFF00E676), autoScale) { autoScale = it }
                 CurveToggleChip("FILTERED", WaveFiltered, showFiltered) { showFiltered = it }
                 CurveToggleChip("RESIDUAL", WaveResidual, showResidual) { showResidual = it }
                 CurveToggleChip("NORM RES", Color(0xFFFF9100), showNormalizedResidual) { showNormalizedResidual = it }
@@ -203,18 +205,22 @@ fun WaveformGraph(
                 if (graphWidth <= 0 || graphHeight <= 0) return@Canvas
 
                 // Compute Y range dynamically
-                var minY = 0.0
-                var maxY = 1024.0
-
-                if (!showRaw && showResidual) {
-                    minY = -50.0
-                    maxY = 250.0
+                val (computedMinY, computedMaxY) = if (autoScale && showRaw && rawSamples.isNotEmpty()) {
+                    val res = calculateRawAutoScale(rawSamples)
+                    Pair(res.minY, res.maxY)
+                } else if (!showRaw && showResidual) {
+                    Pair(-50.0, 250.0)
+                } else {
+                    Pair(0.0, 1024.0)
                 }
+                val minY = computedMinY
+                val maxY = computedMaxY
 
-                // Adjust for zoom
+                // Adjust for zoom centered on the signal
+                val centerY = (minY + maxY) / 2.0
                 val ySpan = (maxY - minY) / zoomScale
-                val curMinY = minY
-                val curMaxY = curMinY + ySpan
+                val curMinY = centerY - ySpan / 2.0
+                val curMaxY = centerY + ySpan / 2.0
 
                 fun mapX(index: Int): Float {
                     return paddingLeft + (index.toFloat() / (sampleCount - 1).coerceAtLeast(1)) * graphWidth
@@ -242,6 +248,24 @@ fun WaveformGraph(
                         style = TextStyle(color = LabBorder, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                     )
                 }
+
+                // Vertical scale mode indicator
+                val scaleText = if (autoScale && showRaw) {
+                    "AUTO SCALE: [%.0f..%.0f ADC]".format(curMinY, curMaxY)
+                } else {
+                    "FULL SCALE: [0..1024 ADC]"
+                }
+                drawText(
+                    textMeasurer = textMeasurer,
+                    text = scaleText,
+                    topLeft = Offset(paddingLeft + 6f, paddingTop + 2f),
+                    style = TextStyle(
+                        color = if (autoScale && showRaw) Color(0xFF00E676).copy(alpha = 0.85f) else LabBorder,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
 
                 // Vertical grid lines (Time / Sample indices)
                 val xSteps = 7
@@ -318,11 +342,17 @@ fun WaveformGraph(
                     val cursorX = mapX(selectedCursorIndex)
                     drawLine(Color.White, Offset(cursorX, paddingTop), Offset(cursorX, size.height - paddingBottom), strokeWidth = 1.5f)
 
-                    // Draw dot on filtered curve
-                    val curVal = filteredCurve.getOrNull(selectedCursorIndex) ?: rawSamples.getOrNull(selectedCursorIndex)?.toDouble() ?: 0.0
+                    // Draw dot on curve (prioritize RAW curve if RAW is active)
+                    val curVal = if (showRaw && rawSamples.isNotEmpty()) {
+                        rawSamples.getOrNull(selectedCursorIndex)?.toDouble() ?: 0.0
+                    } else if (filteredCurve.isNotEmpty()) {
+                        filteredCurve.getOrNull(selectedCursorIndex) ?: 0.0
+                    } else {
+                        0.0
+                    }
                     val cursorY = mapY(curVal).coerceIn(paddingTop, size.height - paddingBottom)
                     drawCircle(Color.White, radius = 5f, center = Offset(cursorX, cursorY))
-                    drawCircle(WaveFiltered, radius = 3f, center = Offset(cursorX, cursorY))
+                    drawCircle(if (showRaw) WaveRaw else WaveFiltered, radius = 3f, center = Offset(cursorX, cursorY))
                 }
             }
 
@@ -405,4 +435,61 @@ private fun CurveToggleChip(
         ),
         modifier = Modifier.height(28.dp)
     )
+}
+
+/**
+ * Result bundle for oscilloscope vertical auto-scaling.
+ */
+data class AutoScaleRange(
+    val minY: Double,
+    val maxY: Double
+)
+
+/**
+ * Calculates oscilloscope vertical auto-scaling range for RAW ADC waveform visualization.
+ *
+ * Requirements:
+ * 1. Calculate minimum sample value.
+ * 2. Calculate maximum sample value.
+ * 3. Calculate range = max - min.
+ * 4. If range is zero or extremely small, use a safe minimum range.
+ * 5. Add a margin around the signal: margin = max(range * marginFraction, minimumMargin).
+ * 6. displayMin = min - margin, displayMax = max + margin.
+ * 7. Clamp the final range to valid ADC limits where appropriate [0, maxAdcLimit].
+ */
+fun calculateRawAutoScale(
+    rawSamples: IntArray,
+    safeMinRange: Double = 10.0,
+    minimumMargin: Double = 3.0,
+    marginFraction: Double = 0.10,
+    maxAdcLimit: Double = 1024.0
+): AutoScaleRange {
+    if (rawSamples.isEmpty()) {
+        return AutoScaleRange(0.0, maxAdcLimit)
+    }
+    var minVal = Double.MAX_VALUE
+    var maxVal = -Double.MAX_VALUE
+    for (s in rawSamples) {
+        val v = s.toDouble()
+        if (v < minVal) minVal = v
+        if (v > maxVal) maxVal = v
+    }
+    if (minVal > maxVal) {
+        return AutoScaleRange(0.0, maxAdcLimit)
+    }
+
+    val range = maxVal - minVal
+    val effectiveRange = max(range, safeMinRange)
+    val margin = max(effectiveRange * marginFraction, minimumMargin)
+
+    var displayMin = (minVal - margin).coerceAtLeast(0.0)
+    var displayMax = (maxVal + margin).coerceAtMost(maxAdcLimit)
+
+    if (displayMax - displayMin < safeMinRange) {
+        val center = (minVal + maxVal) / 2.0
+        displayMin = (center - safeMinRange / 2.0).coerceAtLeast(0.0)
+        displayMax = (displayMin + safeMinRange).coerceAtMost(maxAdcLimit)
+    }
+
+    return AutoScaleRange(displayMin, displayMax)
 }

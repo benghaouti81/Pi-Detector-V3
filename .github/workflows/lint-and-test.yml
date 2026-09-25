@@ -2,9 +2,10 @@ name: Lint & Test
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, master, develop ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, master, develop ]
+  workflow_dispatch:
 
 jobs:
   lint:
@@ -15,17 +16,26 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
+          cache: gradle
 
       - name: Create dummy .env file for secrets plugin
         run: |
           touch .env
           if [ -f .env.example ]; then
             cp .env.example .env
+          fi
+
+      - name: Create debug.keystore if needed
+        run: |
+          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f debug.keystore ]; then
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
       - name: Setup Gradle
@@ -37,12 +47,17 @@ jobs:
         run: |
           if [ ! -f gradlew ]; then
             echo "gradlew not found in repository checkout, generating wrapper..."
-            gradle wrapper
+            gradle wrapper --gradle-version 9.3.1
           fi
           chmod +x gradlew
 
       - name: Run Lint
-        run: ./gradlew lint
+        run: |
+          if [ -f ./gradlew ]; then
+            ./gradlew lintDebug --stacktrace
+          else
+            gradle lintDebug --stacktrace
+          fi
 
   test:
     name: Unit Tests
@@ -52,17 +67,26 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
+          cache: gradle
 
       - name: Create dummy .env file for secrets plugin
         run: |
           touch .env
           if [ -f .env.example ]; then
             cp .env.example .env
+          fi
+
+      - name: Create debug.keystore if needed
+        run: |
+          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f debug.keystore ]; then
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
       - name: Setup Gradle
@@ -74,12 +98,17 @@ jobs:
         run: |
           if [ ! -f gradlew ]; then
             echo "gradlew not found in repository checkout, generating wrapper..."
-            gradle wrapper
+            gradle wrapper --gradle-version 9.3.1
           fi
           chmod +x gradlew
 
       - name: Run Unit Tests
-        run: ./gradlew test
+        run: |
+          if [ -f ./gradlew ]; then
+            ./gradlew testDebugUnitTest --stacktrace
+          else
+            gradle testDebugUnitTest --stacktrace
+          fi
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v4

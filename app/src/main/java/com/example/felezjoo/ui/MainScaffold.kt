@@ -17,6 +17,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ShowChart
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.Compare
@@ -29,14 +32,11 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.SelectAll
-import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -138,7 +138,7 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
                             modifier = Modifier.size(38.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.ShowChart, contentDescription = null, tint = LabPrimary)
+                                Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = null, tint = LabPrimary)
                             }
                         }
                         Spacer(modifier = Modifier.width(10.dp))
@@ -270,7 +270,7 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
                             containerColor = if (audioManager.isMuted) LabError.copy(alpha = 0.15f) else Color.Transparent
                         ) {
                             Icon(
-                                if (audioManager.isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                                if (audioManager.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                                 contentDescription = "Mute",
                                 tint = if (audioManager.isMuted) LabError else Color.White
                             )
@@ -333,7 +333,7 @@ fun MainScaffold(viewModel: FelezJooViewModel) {
 private fun getScreenIcon(screen: Screen): ImageVector {
     return when (screen) {
         Screen.DASHBOARD -> Icons.Default.Dashboard
-        Screen.LIVE_WAVEFORM -> Icons.Default.ShowChart
+        Screen.LIVE_WAVEFORM -> Icons.AutoMirrored.Filled.ShowChart
         Screen.SIGNAL_LAB -> Icons.Default.Science
         Screen.DETECTOR_CONTROLS -> Icons.Default.Build
         Screen.TARGET_IRON -> Icons.Default.Grain

@@ -15,10 +15,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -185,7 +185,7 @@ fun FieldModeScreen(viewModel: FelezJooViewModel) {
                     .testTag("field_mute_btn")
             ) {
                 Icon(
-                    if (audioManager.isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    if (audioManager.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                     contentDescription = "Mute Toggle",
                     tint = if (audioManager.isMuted) LabError else LabPrimary
                 )
